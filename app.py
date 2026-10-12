@@ -1,5 +1,5 @@
 # app.py
-# 基督教聖約教會堅樂小學 - 陸運會行政自動化、成績計算與公眾即時看板系統 (All-in-One 旗艦完整版)
+# 基督教聖約教會堅樂小學 - 陸運會行政自動化、成績計算、唯讀看板與標準報名表系統
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -93,13 +93,19 @@ MASTER_EVENTS = {
 POINT_SYSTEM = {1: 9, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2, 8: 1}
 
 GRADE_EVENTS = {
-    1: ["擲木球", "立定跳遠", "單人跳前繩", "40米跑", "60米跑"],
-    2: ["擲木球", "立定跳遠", "單人跳前繩", "40米跑", "60米跑"],
-    3: ["擲木球", "立定跳遠", "單人跳前繩", "40米跑", "60米跑"],
-    4: ["擲壘球", "助跑跳遠", "單人跳前繩", "60米跑", "100米跑"],
-    5: ["擲壘球", "助跑跳遠", "60米跑", "100米跑", "200米跑"],
-    6: ["擲壘球", "助跑跳遠", "60米跑", "100米跑", "200米跑"],
+    1: ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"],
+    2: ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"],
+    3: ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"],
+    4: ["60米跑", "100米跑", "擲壘球", "助跑跳遠", "單人跳前繩"],
+    5: ["60米跑", "100米跑", "200米跑", "擲壘球", "助跑跳遠"],
+    6: ["60米跑", "100米跑", "200米跑", "擲壘球", "助跑跳遠"],
 }
+
+def get_ordered_grade_events(grade):
+    return GRADE_EVENTS.get(grade, ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"])
+
+def get_short_event_name(ev_name):
+    return ev_name.replace("米跑", "M").replace("米", "M")
 
 # =====================================================================
 # 內建 Word 排版輔助引擎
@@ -108,7 +114,7 @@ def set_cell_background(cell, hex_color):
     shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{hex_color}"/>')
     cell._tc.get_or_add_tcPr().append(shd)
 
-def set_cell_padding(cell, top=45, bottom=45, left=50, right=50):
+def set_cell_padding(cell, top=40, bottom=40, left=45, right=45):
     tcPr = cell._tc.get_or_add_tcPr()
     tcMar = OxmlElement('w:tcMar')
     for m, val in [('w:top', top), ('w:bottom', bottom), ('w:left', left), ('w:right', right)]:
@@ -122,12 +128,12 @@ def add_clean_borders(table):
     tblPr = table._tbl.tblPr
     borders = parse_xml(
         f'<w:tblBorders {nsdecls("w")}>'
-        f'  <w:top w:val="single" w:sz="4" w:space="0" w:color="A6ACAF"/>'
-        f'  <w:bottom w:val="single" w:sz="4" w:space="0" w:color="A6ACAF"/>'
-        f'  <w:left w:val="single" w:sz="4" w:space="0" w:color="A6ACAF"/>'
-        f'  <w:right w:val="single" w:sz="4" w:space="0" w:color="A6ACAF"/>'
-        f'  <w:insideH w:val="single" w:sz="4" w:space="0" w:color="D5D8DC"/>'
-        f'  <w:insideV w:val="single" w:sz="4" w:space="0" w:color="D5D8DC"/>'
+        f'  <w:top w:val="single" w:sz="6" w:space="0" w:color="000000"/>'
+        f'  <w:bottom w:val="single" w:sz="6" w:space="0" w:color="000000"/>'
+        f'  <w:left w:val="single" w:sz="6" w:space="0" w:color="000000"/>'
+        f'  <w:right w:val="single" w:sz="6" w:space="0" w:color="000000"/>'
+        f'  <w:insideH w:val="single" w:sz="4" w:space="0" w:color="A6ACAF"/>'
+        f'  <w:insideV w:val="single" w:sz="4" w:space="0" w:color="A6ACAF"/>'
         f'</w:tblBorders>'
     )
     tblPr.append(borders)
@@ -137,6 +143,265 @@ def make_table_cant_split(table):
         trPr = row._tr.get_or_add_trPr()
         trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
 
+# ---------------------------------------------------------------------
+# 1. 班級選拔紙本報名表格 (完全按用戶截圖男女灰底互斥排版)
+# ---------------------------------------------------------------------
+def build_class_blank_registration_doc(classes_to_export, school_name, session_title, output_filename):
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin = Inches(0.4)
+        section.bottom_margin = Inches(0.4)
+        section.left_margin = Inches(0.4)
+        section.right_margin = Inches(0.4)
+
+    sess = session_title if ("屆" in session_title or "年度" in session_title) else f"第{session_title}屆"
+    df_stu = st.session_state.get("df_students", None)
+    if df_stu is None: return
+
+    quotas = get_quota_matrix()
+    total_classes = len(classes_to_export)
+
+    for c_idx, c_name in enumerate(classes_to_export):
+        c_students = df_stu[df_stu["班別"] == c_name].sort_values(by="學號")
+        grade = int(c_name[0]) if c_name[0].isdigit() else 1
+        ev_list = get_ordered_grade_events(grade)
+        n_ev = len(ev_list)
+
+        saved_reg = load_class_reg(c_name)
+        reg_map = {str(r["學號"]): r["項目"] for r in saved_reg}
+
+        # 1. 抬頭
+        p_t = doc.add_paragraph()
+        p_t.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_t.paragraph_format.space_after = Pt(1)
+        r1 = p_t.add_run(f"{school_name}\n")
+        r1.font.bold = True
+        r1.font.size = Pt(15)
+
+        r2 = p_t.add_run(f"{sess}陸運會 【{c_name}】班際學生選拔報名登記表\n")
+        r2.font.bold = True
+        r2.font.size = Pt(12.5)
+        r2.font.color.rgb = RGBColor(0, 51, 102)
+
+        # 2. 名額摘要盒
+        p_qbox = doc.add_paragraph()
+        p_qbox.paragraph_format.space_before = Pt(1)
+        p_qbox.paragraph_format.space_after = Pt(3)
+        p_qbox.paragraph_format.keep_with_next = True
+
+        b_quota_items = [f"{get_short_event_name(ev)}: {quotas.get(f'{c_name}_男_{ev}', 2)}人" for ev in ev_list]
+        g_quota_items = [f"{get_short_event_name(ev)}: {quotas.get(f'{c_name}_女_{ev}', 2)}人" for ev in ev_list]
+
+        r_qh = p_qbox.add_run("📢 【本班項目參賽限額（體育科主任核定）】（每生限報 1 項個人賽，請依限額選拔）：\n")
+        r_qh.bold = True
+        r_qh.font.size = Pt(8.5)
+        r_qh.font.color.rgb = RGBColor(180, 40, 40)
+
+        r_b = p_qbox.add_run(f"👦 男子組限額：{' ｜ '.join(b_quota_items)}    ")
+        r_b.font.size = Pt(8)
+        r_b.bold = True
+
+        r_g = p_qbox.add_run(f"👧 女子組限額：{' ｜ '.join(g_quota_items)}")
+        r_g.font.size = Pt(8)
+        r_g.bold = True
+
+        # 3. 核心表格 (學號, 中文姓名, 性別, 男子組項目..., 女子組項目...)
+        col_count = 3 + n_ev * 2
+        total_rows = len(c_students) + 2
+        table = doc.add_table(rows=total_rows, cols=col_count)
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        add_clean_borders(table)
+        make_table_cant_split(table)
+
+        col_widths = [0.45, 1.05, 0.45] + [0.55] * n_ev + [0.55] * n_ev
+        for row in table.rows:
+            for j, w in enumerate(col_widths):
+                if j < len(row.cells): row.cells[j].width = Inches(w)
+
+        # (1) 學號 垂直合併
+        c_sid = table.cell(0, 0)
+        c_sid.merge(table.cell(1, 0))
+        c_sid.text = "學號"
+        c_sid.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        c_sid.paragraphs[0].runs[0].font.bold = True
+        c_sid.paragraphs[0].runs[0].font.size = Pt(8.5)
+        c_sid.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        set_cell_padding(c_sid, 30, 30, 10, 10)
+
+        # (2) 中文姓名 垂直合併
+        c_name_cell = table.cell(0, 1)
+        c_name_cell.merge(table.cell(1, 1))
+        c_name_cell.text = "中文姓名"
+        c_name_cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        c_name_cell.paragraphs[0].runs[0].font.bold = True
+        c_name_cell.paragraphs[0].runs[0].font.size = Pt(8.5)
+        c_name_cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        set_cell_padding(c_name_cell, 30, 30, 10, 10)
+
+        # (3) 性別 垂直合併
+        c_gen = table.cell(0, 2)
+        c_gen.merge(table.cell(1, 2))
+        c_gen.text = "性別"
+        c_gen.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        c_gen.paragraphs[0].runs[0].font.bold = True
+        c_gen.paragraphs[0].runs[0].font.size = Pt(8.5)
+        c_gen.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        set_cell_padding(c_gen, 30, 30, 10, 10)
+
+        # (4) 男子組 橫向合併
+        c_b_head = table.cell(0, 3).merge(table.cell(0, 3 + n_ev - 1))
+        c_b_head.text = "男  子  組"
+        c_b_head.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        c_b_head.paragraphs[0].runs[0].font.bold = True
+        c_b_head.paragraphs[0].runs[0].font.size = Pt(9.5)
+        c_b_head.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        set_cell_padding(c_b_head, 30, 30, 10, 10)
+
+        # (5) 女子組 橫向合併
+        c_g_head = table.cell(0, 3 + n_ev).merge(table.cell(0, col_count - 1))
+        c_g_head.text = "女  子  組"
+        c_g_head.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        c_g_head.paragraphs[0].runs[0].font.bold = True
+        c_g_head.paragraphs[0].runs[0].font.size = Pt(9.5)
+        c_g_head.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        set_cell_padding(c_g_head, 30, 30, 10, 10)
+
+        # 第 1 列：項目子表頭與名額
+        for k, ev in enumerate(ev_list):
+            s_ev = get_short_event_name(ev)
+            b_quota = quotas.get(f"{c_name}_男_{ev}", 2)
+            g_quota = quotas.get(f"{c_name}_女_{ev}", 2)
+
+            c_bk = table.cell(1, 3 + k)
+            c_bk.text = f"{s_ev}\n(限{b_quota})"
+            c_bk.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if c_bk.paragraphs[0].runs:
+                c_bk.paragraphs[0].runs[0].font.bold = True
+                c_bk.paragraphs[0].runs[0].font.size = Pt(7.5)
+            c_bk.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            set_cell_padding(c_bk, 25, 25, 8, 8)
+
+            c_gk = table.cell(1, 3 + n_ev + k)
+            c_gk.text = f"{s_ev}\n(限{g_quota})"
+            c_gk.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if c_gk.paragraphs[0].runs:
+                c_gk.paragraphs[0].runs[0].font.bold = True
+                c_gk.paragraphs[0].runs[0].font.size = Pt(7.5)
+            c_gk.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            set_cell_padding(c_gk, 25, 25, 8, 8)
+
+        # 填入學生資料（男女互斥灰底）
+        for i, (_, s) in enumerate(c_students.iterrows()):
+            r_idx = i + 2
+            sid = str(s["學號"])
+            sname = str(s["姓名"])
+            sgender = str(s["性別"]).strip()
+
+            is_boy = (sgender in ["男", "M", "B"])
+            gender_code = "M" if is_boy else "F"
+            chosen_item = reg_map.get(sid, "")
+
+            c_s = table.cell(r_idx, 0)
+            c_s.text = sid
+            c_s.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if c_s.paragraphs[0].runs: c_s.paragraphs[0].runs[0].font.size = Pt(8)
+            set_cell_padding(c_s, 22, 22, 10, 10)
+
+            c_n = table.cell(r_idx, 1)
+            c_n.text = sname
+            c_n.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if c_n.paragraphs[0].runs: c_n.paragraphs[0].runs[0].font.size = Pt(8)
+            set_cell_padding(c_n, 22, 22, 10, 10)
+
+            c_g = table.cell(r_idx, 2)
+            c_g.text = gender_code
+            c_g.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if c_g.paragraphs[0].runs: c_g.paragraphs[0].runs[0].font.size = Pt(8)
+            set_cell_padding(c_g, 22, 22, 10, 10)
+
+            for k, ev in enumerate(ev_list):
+                col_b_idx = 3 + k
+                col_g_idx = 3 + n_ev + k
+
+                c_target_b = table.cell(r_idx, col_b_idx)
+                c_target_g = table.cell(r_idx, col_g_idx)
+                set_cell_padding(c_target_b, 22, 22, 8, 8)
+                set_cell_padding(c_target_g, 22, 22, 8, 8)
+
+                if is_boy:
+                    # 男生：男子組白底供劃記，女子組灰底隔離
+                    c_target_b.text = "✔" if (chosen_item == ev) else ""
+                    if c_target_b.paragraphs[0].runs:
+                        c_target_b.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        c_target_b.paragraphs[0].runs[0].font.bold = True
+                        c_target_b.paragraphs[0].runs[0].font.size = Pt(8.5)
+                    set_cell_background(c_target_g, "BFBFBF")
+                    c_target_g.text = ""
+                else:
+                    # 女生：男子組灰底隔離，女子組白底供劃記
+                    set_cell_background(c_target_b, "BFBFBF")
+                    c_target_b.text = ""
+
+                    c_target_g.text = "✔" if (chosen_item == ev) else ""
+                    if c_target_g.paragraphs[0].runs:
+                        c_target_g.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        c_target_g.paragraphs[0].runs[0].font.bold = True
+                        c_target_g.paragraphs[0].runs[0].font.size = Pt(8.5)
+
+        # 4. 接力區（小四至小六）
+        if grade in [4, 5, 6]:
+            doc.add_paragraph().paragraph_format.space_after = Pt(2)
+            p_rh = doc.add_paragraph()
+            p_rh.paragraph_format.keep_with_next = True
+
+            min_b = quotas.get(f"relay_g{grade}_min_b", 1)
+            min_g = quotas.get(f"relay_g{grade}_min_g", 1)
+            p_rh.add_run(f"🎽 班際 4×100米 混合接力提名（大會規則：4 位正選中，男生至少 {min_b} 人，女生至少 {min_g} 人；棒次自選）：").bold = True
+            p_rh.runs[0].font.size = Pt(8.5)
+
+            t_relay = doc.add_table(rows=2, cols=6)
+            t_relay.alignment = WD_TABLE_ALIGNMENT.CENTER
+            add_clean_borders(t_relay)
+            make_table_cant_split(t_relay)
+
+            r_titles = ["第 1 棒", "第 2 棒", "第 3 棒", "第 4 棒", "男子後備 (1名)", "女子後備 (1名)"]
+            for j, rt in enumerate(r_titles):
+                c = t_relay.cell(0, j)
+                c.text = rt
+                c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                c.paragraphs[0].runs[0].font.bold = True
+                c.paragraphs[0].runs[0].font.size = Pt(8)
+                set_cell_background(c, "D4E6F1")
+                set_cell_padding(c, 25, 25, 10, 10)
+
+            relay_info = load_class_relay(c_name) or {}
+            legs = relay_info.get("legs", ["", "", "", ""])
+            while len(legs) < 4: legs.append("")
+            r_vals = legs + [relay_info.get("sub_b", ""), relay_info.get("sub_g", "")]
+
+            for j, val in enumerate(r_vals):
+                c = t_relay.cell(1, j)
+                c.text = str(val) if val else "（正楷填寫）"
+                c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                if c.paragraphs[0].runs:
+                    c.paragraphs[0].runs[0].font.size = Pt(7.5)
+                    if not val: c.paragraphs[0].runs[0].font.color.rgb = RGBColor(140, 140, 140)
+                set_cell_padding(c, 25, 25, 10, 10)
+
+        # 5. 簽署欄
+        p_sign = doc.add_paragraph()
+        p_sign.paragraph_format.space_before = Pt(8)
+        p_sign.paragraph_format.keep_with_next = True
+        p_sign.add_run("體育老師／班主任簽署：____________________        體育科主任核簽：____________________        繳交日期：2026年___月___日").font.size = Pt(8)
+
+        if c_idx < total_classes - 1:
+            doc.add_page_break()
+
+    doc.save(output_filename)
+
+# ---------------------------------------------------------------------
+# 2. 其它 Word 報表生成引擎 (秩序冊、執法紙、頒獎名冊、道次表)
+# ---------------------------------------------------------------------
 def build_word_document(events_data, school_name, session_title, output_filename):
     doc = Document()
     for section in doc.sections:
@@ -1100,7 +1365,7 @@ def auto_compile_events_from_database():
     return events_data
 
 # =====================================================================
-# 5. 唯讀公眾看板渲染模組 (Spectator Dashboard)
+# 3. 唯讀公眾看板渲染模組 (Spectator Dashboard)
 # =====================================================================
 def render_spectator_dashboard(cfg):
     st.markdown(
@@ -1221,10 +1486,8 @@ def render_spectator_dashboard(cfg):
             st.warning("⚠️ 名冊建置中，請稍後查詢。")
         else:
             c_s1, c_s2 = st.columns([1, 2])
-            with c_s1:
-                search_class = st.selectbox("按班別篩選", ["-- 全部班別 --"] + sorted(df_stu["班別"].unique()))
-            with c_s2:
-                search_name = st.text_input("或輸入學生姓名／學號關鍵字", placeholder="例如：陳大文、03")
+            with c_s1: search_class = st.selectbox("按班別篩選", ["-- 全部班別 --"] + sorted(df_stu["班別"].unique()))
+            with c_s2: search_name = st.text_input("或輸入學生姓名／學號關鍵字", placeholder="例如：陳大文、03")
 
             target_classes = sorted(df_stu["班別"].unique()) if search_class == "-- 全部班別 --" else [search_class]
             
@@ -1234,15 +1497,9 @@ def render_spectator_dashboard(cfg):
                 for en in entries:
                     if en["項目"] != "-- 不參賽 --":
                         all_found.append({
-                            "班別": c_nm,
-                            "學號": en["學號"],
-                            "姓名": en["姓名"],
-                            "性別": en["性別"],
-                            "項目": en["項目"],
-                            "場次": en["場次"],
-                            "組別": en["組別"],
-                            "線道": en["線道"],
-                            "出場排序": en["排序"]
+                            "班別": c_nm, "學號": en["學號"], "姓名": en["姓名"],
+                            "性別": en["性別"], "項目": en["項目"], "場次": en["場次"],
+                            "組別": en["組別"], "線道": en["線道"], "出場排序": en["排序"]
                         })
 
             df_query = pd.DataFrame(all_found)
@@ -1279,7 +1536,7 @@ def render_spectator_dashboard(cfg):
     st.caption("ℹ️ 本看板資料與大會計分中樞即時連線 ｜ 基督教聖約教會堅樂小學 大會秘書處")
 
 # =====================================================================
-# 主程式入口與路由控制 (支援 ?mode=public 唯讀模式)
+# 主程式入口與路由控制
 # =====================================================================
 cfg = get_config()
 
@@ -1290,10 +1547,8 @@ if "df_students" not in st.session_state:
 is_public_mode = st.query_params.get("mode") == "public"
 
 if is_public_mode:
-    # 唯讀公眾模式：直接渲染看板，徹底隱藏所有後台管理側邊欄
     render_spectator_dashboard(cfg)
 else:
-    # 標準管理員模式
     st.sidebar.title("🏃 陸運會行政平台")
     st.sidebar.caption(f"{cfg['school_name']}\n{cfg['session_title']}")
 
@@ -1324,7 +1579,7 @@ else:
         render_spectator_dashboard(cfg)
 
     # ----------------------------------------------------
-    # 模組 1：體育科主任配額設定
+    # 模組 1：配額設定 ＋ 依格式匯出報名表
     # ----------------------------------------------------
     elif menu == "1. 體育科主任：各班各項目配額設定":
         st.title("⚙️ 體育科主任：各班各項目參賽人數比例設定")
@@ -1354,7 +1609,7 @@ else:
                 if col not in class_stats.columns: class_stats[col] = 0
 
             target_grade = st.radio("選擇設定年級", [1, 2, 3, 4, 5, 6], horizontal=True, format_func=lambda x: f"{x}年級")
-            ev_list = GRADE_EVENTS[target_grade]
+            ev_list = get_ordered_grade_events(target_grade)
             classes = sorted([c for c in df_stu["班別"].unique() if str(c).startswith(str(target_grade))])
             quotas = get_quota_matrix()
             
@@ -1392,22 +1647,64 @@ else:
                     ed_relay_class = st.data_editor(df_rc, disabled=["班別", "正選人數", "後備名額 (男女各1)"], hide_index=True, key=f"rc_ed_{target_grade}", use_container_width=True)
 
             st.divider()
-            if st.button(f"💾 儲存 {target_grade} 年級全部配額設定", type="primary"):
-                for _, r in ed_boys.iterrows():
-                    for ev in ev_list: quotas[f"{r['班別']}_男_{ev}"] = int(r[ev])
-                for _, r in ed_girls.iterrows():
-                    for ev in ev_list: quotas[f"{r['班別']}_女_{ev}"] = int(r[ev])
-                
-                if target_grade in [4, 5, 6]:
-                    quotas[f"relay_g{target_grade}_min_b"] = int(r_b_min)
-                    quotas[f"relay_g{target_grade}_min_g"] = int(r_g_min)
-                    for _, r in ed_relay_class.iterrows(): quotas[f"relay_enabled_{r['班別']}"] = bool(r["開放接力報名"])
+            c_save_quota, c_export_grade = st.columns([2, 3])
 
-                save_quota_matrix(quotas)
-                st.success(f"{target_grade} 年級個人賽配額及班際接力設定已成功儲存！")
+            with c_save_quota:
+                if st.button(f"💾 儲存 {target_grade} 年級全部配額設定", type="primary", use_container_width=True):
+                    for _, r in ed_boys.iterrows():
+                        for ev in ev_list: quotas[f"{r['班別']}_男_{ev}"] = int(r[ev])
+                    for _, r in ed_girls.iterrows():
+                        for ev in ev_list: quotas[f"{r['班別']}_女_{ev}"] = int(r[ev])
+                    
+                    if target_grade in [4, 5, 6]:
+                        quotas[f"relay_g{target_grade}_min_b"] = int(r_b_min)
+                        quotas[f"relay_g{target_grade}_min_g"] = int(r_g_min)
+                        for _, r in ed_relay_class.iterrows(): quotas[f"relay_enabled_{r['班別']}"] = bool(r["開放接力報名"])
+
+                    save_quota_matrix(quotas)
+                    st.success(f"🎉 {target_grade} 年級個人賽配額及接力規則已成功儲存！")
+
+            with c_export_grade:
+                grade_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_{target_grade}年級各班選拔報名表(標準格式).docx"
+                if st.button(f"📄 匯出【{target_grade} 年級】紙本選拔報名表 (.docx - 男女灰底格式)", type="secondary", use_container_width=True):
+                    with st.spinner(f"正在生成 {target_grade} 年級各班標準報名表..."):
+                        build_class_blank_registration_doc(classes, cfg["school_name"], cfg["session_title"], grade_doc_name)
+                        with open(grade_doc_name, "rb") as fp:
+                            st.session_state[f"grade_reg_bytes_{target_grade}"] = fp.read()
+                        st.success(f"🎉 {target_grade} 年級標準報名表生成完成！請點擊下方下載：")
+
+            if f"grade_reg_bytes_{target_grade}" in st.session_state:
+                st.download_button(
+                    label=f"📥 下載【{target_grade} 年級】選拔報名表 (含名額與灰底隔離) (.docx)",
+                    data=st.session_state[f"grade_reg_bytes_{target_grade}"],
+                    file_name=grade_doc_name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
+
+            st.write("---")
+            st.subheader("🏫 全校 24 班選拔報名表套裝（體育科主任分發專用）")
+            st.info("💡 **一鍵整疊列印**：依標準格式生成全校 24 班報名表，每班獨立一頁，男生女生互斥灰底，清楚列明各項名額，印出後可整疊直接派發至班主任信箱！")
+
+            all_blank_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_全校24班選拔報名表套裝(標準男女灰底版).docx"
+            if st.button("🖨️ 一鍵生成全校 24 班報名表套裝 (.docx - 每班獨立一頁)", type="primary"):
+                with st.spinner("正在為全校 24 班載入學生名冊與核定配額..."):
+                    all_cl = sorted(df_stu["班別"].unique())
+                    build_class_blank_registration_doc(all_cl, cfg["school_name"], cfg["session_title"], all_blank_doc_name)
+                    with open(all_blank_doc_name, "rb") as fp:
+                        st.session_state["all_blank_reg_bytes"] = fp.read()
+                    st.success("🎉 全校 24 班報名表套裝已排版完成！請點擊下方按鈕下載：")
+
+            if "all_blank_reg_bytes" in st.session_state:
+                st.download_button(
+                    label="📥 下載全校 24 班標準選拔報名表套裝 (.docx)",
+                    data=st.session_state["all_blank_reg_bytes"],
+                    file_name=all_blank_doc_name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
 
     # ----------------------------------------------------
-    # 模組 2：班主任報名登記 (滿額取消顯示項目 ＋ 單班 Word 匯出)
+    # 模組 2：班主任登記
     # ----------------------------------------------------
     elif menu == "2. 班主任：學生選拔報名登記":
         st.title("👨‍🏫 班主任：學生選拔報名登記")
@@ -1424,13 +1721,28 @@ else:
             saved_reg = load_class_reg(c_pick)
             saved_reg_map = {str(r["學號"]): r["項目"] for r in saved_reg}
 
+            # 班主任單班紙本報名表下載
+            c_hdr, c_single_dl = st.columns([3, 2])
+            with c_hdr: st.caption(f"目前班別：{c_pick} ｜ 學生人數：{len(class_df)} 人")
+            with c_single_dl:
+                s_b_name = f"{cfg['school_name']}_{cfg['session_title']}_{c_pick}_選拔報名表.docx"
+                if st.button(f"🖨️ 下載【{c_pick}】紙本報名表格 (.docx)"):
+                    build_class_blank_registration_doc([c_pick], cfg["school_name"], cfg["session_title"], s_b_name)
+                    with open(s_b_name, "rb") as fp:
+                        st.download_button(
+                            label=f"📥 儲存 {c_pick} 報名表 (.docx)",
+                            data=fp.read(),
+                            file_name=s_b_name,
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        )
+
             tab_list = ["個人項目報名"]
             if grade in [4, 5, 6]: tab_list.append("🎽 班際 4×100米 接力")
             tabs = st.tabs(tab_list)
 
             with tabs[0]:
                 st.subheader(f"📌 {c_pick} 個人項目登記（每人限報最多 1 項）")
-                events = GRADE_EVENTS.get(grade, [])
+                events = get_ordered_grade_events(grade)
 
                 current_selections = {}
                 for _, s in class_df.iterrows():
@@ -1445,7 +1757,7 @@ else:
                     cur_val = current_selections.get(sid, "-- 不參賽 --")
                     if cur_val in events: live_counts[g][cur_val] += 1
 
-                st.markdown("##### 📊 本班各項目名額即時動態看板（滿額項目將自動從未報名同學的選單中隱藏）：")
+                st.markdown("##### 📊 本班各項目名額即時動態看板：")
                 board_tabs = st.tabs(["👦 男子組名額狀態", "👧 女子組名額狀態"])
                 for g_idx, g_name in enumerate(["男", "女"]):
                     with board_tabs[g_idx]:
@@ -1455,7 +1767,7 @@ else:
                             c_max = quotas.get(f"{c_pick}_{g_name}_{ev}", 2)
                             c_remain = c_max - c_used
                             with cols[idx]:
-                                if c_used >= c_max: st.warning(f"**{ev}**\n\n**{c_used} / {c_max}** (滿額 🔒)\n\n*(選單已隱藏)*")
+                                if c_used >= c_max: st.warning(f"**{ev}**\n\n**{c_used} / {c_max}** (滿額 🔒)")
                                 else: st.success(f"**{ev}**\n\n**{c_used} / {c_max}**\n\n*(剩 {c_remain} 席 🟢)*")
 
                 st.write("---")
@@ -1689,7 +2001,7 @@ else:
                 st.info("💡 此場為徑賽決賽，道次將在初賽成績錄入完畢後，由系統自動依種子規則 (3,4,5,6,7,2,1,8) 自動產生！")
 
     # ----------------------------------------------------
-    # 模組 4：一鍵匯出 Word 秩序冊與各類報表 (只匯出 100, 200, 400 項目 ＋ 24 班名冊套裝)
+    # 模組 4：一鍵匯出 Word 秩序冊與各類報表
     # ----------------------------------------------------
     elif menu == "4. 一鍵匯出 Word 秩序冊":
         st.title("📄 匯出全校比賽程序秩序冊、裁判執法表與班別名冊")
@@ -1765,7 +2077,7 @@ else:
             )
 
     # ----------------------------------------------------
-    # 模組 5：現場成績錄入、缺席登記與班名次統計 (300項目在此處理列印)
+    # 模組 5：現場成績錄入
     # ----------------------------------------------------
     elif menu == "5. 現場成績錄入與班名次統計":
         st.title("⏱️ 現場成績錄入、初賽晉級與班名次總榜")
@@ -2124,16 +2436,10 @@ else:
                     avg_score = round(net_pt / final_head, 3)
 
                     summary_list.append({
-                        "班別": c,
-                        "年級": f"{c[0]}年級",
-                        "組別": get_division_group(c),
-                        "得分": raw_pt,
-                        "棄權扣減": deduct_pt,
-                        "實得總分": net_pt,
-                        "全班原有人數": orig_head,
-                        "普通缺席人數": excused_cnt,
-                        "實際參賽人數": final_head,
-                        "平均分數": avg_score
+                        "班別": c, "年級": f"{c[0]}年級", "組別": get_division_group(c),
+                        "得分": raw_pt, "棄權扣減": deduct_pt, "實得總分": net_pt,
+                        "全班原有人數": orig_head, "普通缺席人數": excused_cnt,
+                        "實際參賽人數": final_head, "平均分數": avg_score
                     })
 
                 df_standing = pd.DataFrame(summary_list)
@@ -2141,10 +2447,7 @@ else:
                 df_standing["組排名"] = df_standing.groupby("組別")["平均分數"].rank(method="min", ascending=False).astype(int)
 
                 st_tab_grade, st_tab_junior, st_tab_senior, st_tab_all = st.tabs([
-                    "🏅 級際團體榜 (P1–P6)",
-                    "🟢 初級組錦標 (P1–3)",
-                    "🟣 高級組錦標 (P4–6)",
-                    "📊 全校 24 班審核總表"
+                    "🏅 級際團體榜 (P1–P6)", "🟢 初級組錦標 (P1–3)", "🟣 高級組錦標 (P4–6)", "📊 全校 24 班審核總表"
                 ])
 
                 show_cols = [
@@ -2222,7 +2525,6 @@ else:
             min_g = st.number_input("接力正選女生預設最低人數", min_value=0, max_value=3, value=cfg.get("relay_min_girls", 1))
         
         st.write("---")
-        # 方案一：Google Workspace (GAS API) 即時雙向同步
         st.subheader("🌐 【方案一】Google Workspace 雲端即時雙向同步設定")
         st.info("💡 填入部署好的 Google Apps Script Web App 網址後，系統會在裁判輸入成績時自動寫入學校 Google Drive，永不因重開機遺失。")
         
@@ -2258,7 +2560,6 @@ else:
                         st.error(f"🔴 連線失敗，請檢查網址與存取權限: {err}")
 
         st.write("---")
-        # 方案二：全量數據包備份與還原 (雙保險應急防護)
         st.subheader("📦 【方案二】手動全量數據包 (匯出備份 ＋ 上傳還原)")
         st.info("💡 **離線抗災與跨設備同步專用**：可將目前全校所有名冊、配額矩陣、排線道次與比賽積分打包為一個檔案備份到本地；亦可在新設備上傳覆蓋還原。")
 
