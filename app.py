@@ -1,10 +1,11 @@
 # app.py
-# 基督教聖約教會堅樂小學 - 陸運會行政自動化與成績計算平台 (All-in-One 完整版)
+# 基督教聖約教會堅樂小學 - 陸運會行政自動化與成績計算平台 (雙保險同步 All-in-One 完整版)
 import streamlit as st
 import pandas as pd
 import numpy as np
 import json
 import os
+import requests
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -506,7 +507,6 @@ def build_awards_doc(standing_df, school_name, session_title, output_filename):
     p_sub.paragraph_format.space_after = Pt(8)
     p_sub.add_run("（得獎依據：平均分數 = (比賽得分 - 棄權扣分) ÷ 實際參賽人數）").font.size = Pt(8.5)
 
-    # 1. 分組團體錦標 (初級組 P1-3、高級組 P4-6)
     p_h1 = doc.add_paragraph()
     p_h1.paragraph_format.space_before = Pt(4)
     p_h1.paragraph_format.space_after = Pt(3)
@@ -559,7 +559,6 @@ def build_awards_doc(standing_df, school_name, session_title, output_filename):
 
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-    # 2. 級際團體獎 (一至六年級 P1-P6 各級際名次)
     p_h2 = doc.add_paragraph()
     p_h2.paragraph_format.space_before = Pt(6)
     p_h2.paragraph_format.space_after = Pt(3)
@@ -607,7 +606,6 @@ def build_awards_doc(standing_df, school_name, session_title, output_filename):
 
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
-    # 3. 全校各班總成績詳細審核大表
     p_h3 = doc.add_paragraph()
     p_h3.paragraph_format.space_before = Pt(6)
     p_h3.paragraph_format.space_after = Pt(3)
@@ -668,13 +666,183 @@ def build_awards_doc(standing_df, school_name, session_title, output_filename):
 
     doc.save(output_filename)
 
+def compile_single_class_entries(class_name):
+    if "df_students" not in st.session_state: return [], None
+    df_stu = st.session_state["df_students"]
+    c_students = df_stu[df_stu["班別"] == class_name].sort_values(by="學號")
+    grade = int(class_name[0]) if class_name[0].isdigit() else 1
+    
+    saved_reg = load_class_reg(class_name)
+    reg_map = {str(r["學號"]): r["項目"] for r in saved_reg}
+    grade_ev_ids = [eid for eid, enm in MASTER_EVENTS.items() if str(eid).startswith(str(grade)) or get_grade_digit(enm) == str(grade)]
+    
+    schedule_cache = {}
+    for eid in grade_ev_ids:
+        enm = MASTER_EVENTS[eid]
+        if (101 <= eid <= 124) or (225 <= eid <= 228):
+            sch = load_custom_schedule(eid)
+            schedule_cache[eid] = sch if sch is not None else generate_auto_track_schedule(eid, enm)
+        elif 229 <= eid <= 260:
+            sch = load_custom_schedule(eid)
+            schedule_cache[eid] = sch if sch is not None else generate_auto_field_schedule(eid, enm)
+            
+    student_entries = []
+    for _, s in c_students.iterrows():
+        sid, sname, gender = str(s["學號"]), str(s["姓名"]), str(s["性別"])
+        chosen_item = reg_map.get(sid, "-- 不參賽 --")
+        entry = {"學號": sid, "姓名": sname, "性別": gender, "項目": chosen_item, "場次": "—", "組別": "—", "線道": "—", "排序": "—"}
+        
+        if chosen_item != "-- 不參賽 --":
+            target_eid = next((eid for eid in grade_ev_ids if (gender in MASTER_EVENTS[eid]) and (chosen_item in MASTER_EVENTS[eid])), None)
+            if target_eid and target_eid in schedule_cache:
+                sch_df = schedule_cache[target_eid]
+                entry["場次"] = f"場次 {target_eid}"
+                if "線道" in sch_df.columns:
+                    m_row = sch_df[(sch_df["班別"] == class_name) & ((sch_df["學號"].astype(str) == sid) | (sch_df["姓名"] == sname))]
+                    if not m_row.empty:
+                        entry["組別"] = str(m_row.iloc[0]["組別"])
+                        entry["線道"] = f"第 {m_row.iloc[0]['線道']} 線"
+                elif "出場次序" in sch_df.columns:
+                    m_row = sch_df[(sch_df["班別"] == class_name) & ((sch_df["學號"].astype(str) == sid) | (sch_df["姓名"] == sname))]
+                    if not m_row.empty:
+                        entry["組別"] = "直接決賽"
+                        entry["排序"] = f"第 {m_row.iloc[0]['出場次序']} 位"
+        student_entries.append(entry)
+        
+    relay_info = load_class_relay(class_name) if grade in [4, 5, 6] else None
+    return student_entries, relay_info
+
+def build_class_entry_doc(classes_to_export, school_name, session_title, output_filename):
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin = Inches(0.45)
+        section.bottom_margin = Inches(0.45)
+        section.left_margin = Inches(0.45)
+        section.right_margin = Inches(0.45)
+
+    sess = session_title if ("屆" in session_title or "年度" in session_title) else f"第{session_title}屆"
+    total_classes = len(classes_to_export)
+
+    for c_idx, c_name in enumerate(classes_to_export):
+        entries, relay_info = compile_single_class_entries(c_name)
+        grade = int(c_name[0]) if c_name[0].isdigit() else 1
+
+        p_t = doc.add_paragraph()
+        p_t.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_t.paragraph_format.space_after = Pt(2)
+        r1 = p_t.add_run(f"{school_name}\n")
+        r1.font.bold = True
+        r1.font.size = Pt(16)
+        
+        r2 = p_t.add_run(f"{sess}陸運會 【{c_name}】班際參賽名單暨道次排序表\n")
+        r2.font.bold = True
+        r2.font.size = Pt(13)
+        r2.font.color.rgb = RGBColor(0, 51, 102)
+
+        p_sub = doc.add_paragraph()
+        p_sub.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_sub.paragraph_format.space_after = Pt(8)
+        p_sub.add_run("（班主任存檔及學生通知專用：請核對各項出賽場次、組別、線道及出場排序）").font.size = Pt(8.5)
+
+        p_h1 = doc.add_paragraph()
+        p_h1.paragraph_format.space_before = Pt(4)
+        p_h1.paragraph_format.space_after = Pt(3)
+        p_h1.paragraph_format.keep_with_next = True
+        p_h1.add_run("📋 個人項目參賽資料清單").bold = True
+
+        table_p = doc.add_table(rows=len(entries) + 1, cols=8)
+        table_p.alignment = WD_TABLE_ALIGNMENT.CENTER
+        add_clean_borders(table_p)
+        make_table_cant_split(table_p)
+
+        headers = ["學號", "姓名", "性別", "參賽項目", "場次編號", "組別", "線道", "出場排序"]
+        widths = [0.8, 1.3, 0.7, 1.6, 1.1, 1.0, 1.0, 1.1]
+
+        for j, (h_t, w_v) in enumerate(zip(headers, widths)):
+            c = table_p.cell(0, j)
+            c.width = Inches(w_v)
+            c.text = h_t
+            c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            c.paragraphs[0].runs[0].font.bold = True
+            c.paragraphs[0].runs[0].font.size = Pt(8.5)
+            set_cell_background(c, "EAEDED")
+            set_cell_padding(c, 35, 35, 30, 30)
+
+        for i, en in enumerate(entries):
+            row_idx = i + 1
+            vals = [en["學號"], en["姓名"], en["性別"], en["項目"], en["場次"], en["組別"], en["線道"], en["排序"]]
+            for j, val in enumerate(vals):
+                cell = table_p.cell(row_idx, j)
+                cell.text = str(val)
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                if cell.paragraphs[0].runs: cell.paragraphs[0].runs[0].font.size = Pt(8)
+                set_cell_padding(cell, 30, 30, 20, 20)
+
+                if en["項目"] != "-- 不參賽 --":
+                    if j in [3, 5, 6, 7]: cell.paragraphs[0].runs[0].font.bold = True
+                    if j == 3: set_cell_background(cell, "EBF5FB")
+                else: set_cell_background(cell, "FAFAFA")
+
+        if grade in [4, 5, 6]:
+            doc.add_paragraph().paragraph_format.space_after = Pt(4)
+            p_h2 = doc.add_paragraph()
+            p_h2.paragraph_format.space_before = Pt(4)
+            p_h2.paragraph_format.space_after = Pt(3)
+            p_h2.paragraph_format.keep_with_next = True
+            
+            relay_eid = 481 + grade
+            lane_map = {"A": 3, "B": 4, "C": 5, "D": 6, "E": 7}
+            c_lane = lane_map.get(c_name[-1].upper(), 3)
+            p_h2.add_run(f"🎽 班際 4×100米 混合接力跑（【場次 {relay_eid}】｜ 線道：第 {c_lane} 線）").bold = True
+
+            table_r = doc.add_table(rows=2, cols=6)
+            table_r.alignment = WD_TABLE_ALIGNMENT.CENTER
+            add_clean_borders(table_r)
+            make_table_cant_split(table_r)
+
+            r_headers = ["🏃 第 1 棒", "🏃 第 2 棒", "🏃 第 3 棒", "🏃 第 4 棒", "後備 (男)", "後備 (女)"]
+            for j, rh in enumerate(r_headers):
+                c = table_r.cell(0, j)
+                c.width = Inches(1.4)
+                c.text = rh
+                c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                c.paragraphs[0].runs[0].font.bold = True
+                c.paragraphs[0].runs[0].font.size = Pt(8.5)
+                set_cell_background(c, "D4E6F1")
+                set_cell_padding(c, 35, 35, 30, 30)
+
+            legs = relay_info.get("legs", ["未指定"]*4) if relay_info else ["未報名"]*4
+            while len(legs) < 4: legs.append("未指定")
+            sub_b = relay_info.get("sub_b", "—") if relay_info else "—"
+            sub_g = relay_info.get("sub_g", "—") if relay_info else "—"
+            r_vals = [legs[0], legs[1], legs[2], legs[3], sub_b, sub_g]
+
+            for j, val in enumerate(r_vals):
+                c = table_r.cell(1, j)
+                c.text = str(val)
+                c.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+                if c.paragraphs[0].runs:
+                    c.paragraphs[0].runs[0].font.bold = True
+                    c.paragraphs[0].runs[0].font.size = Pt(8.5)
+                set_cell_padding(c, 35, 35, 30, 30)
+
+        p_sign = doc.add_paragraph()
+        p_sign.paragraph_format.space_before = Pt(18)
+        p_sign.paragraph_format.keep_with_next = True
+        p_sign.add_run(f"班主任簽署：____________________        體育科主任核簽：____________________        製表日期：2026年___月___日").font.size = Pt(9)
+
+        if c_idx < total_classes - 1:
+            doc.add_page_break()
+
+    doc.save(output_filename)
+
 # =====================================================================
-# 系統輔助與資料庫函式
+# 系統輔助、雲端同步 (GAS API) 與本地檔案處理
 # =====================================================================
 def get_config():
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "r", encoding="utf-8") as f: return json.load(f)
-    return {"school_name": "基督教聖約教會堅樂小學", "session_title": "第二十四屆", "relay_min_boys": 1, "relay_min_girls": 1}
+    return {"school_name": "基督教聖約教會堅樂小學", "session_title": "第二十四屆", "relay_min_boys": 1, "relay_min_girls": 1, "gas_api_url": ""}
 
 def save_config(cfg):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f: json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -736,13 +904,40 @@ def load_custom_schedule(eid):
         except: return None
     return None
 
+# ---------------------------------------------------------------------
+# 雙保險同步核心：優先讀寫 Google Apps Script 雲端，離線自動 Fallback 本地
+# ---------------------------------------------------------------------
 def get_tournament_results():
+    cfg = get_config()
+    gas_url = cfg.get("gas_api_url", "").strip()
+    if gas_url:
+        try:
+            res = requests.get(gas_url, timeout=4)
+            if res.status_code == 200:
+                data = res.json()
+                if isinstance(data, dict) and "results" in data:
+                    # 背景同步一份至本地硬碟備份
+                    with open(RESULTS_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+                    return data
+        except Exception:
+            pass  # 若連線逾時，無縫切換讀取本地硬碟
+
     if os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return {"results": [], "absences": [], "qualifiers": {}}
 
 def save_tournament_results(data):
+    # 1. 保證寫入本地實體檔案
     with open(RESULTS_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    # 2. 雙向同步至學校 Google Drive (方案一)
+    cfg = get_config()
+    gas_url = cfg.get("gas_api_url", "").strip()
+    if gas_url:
+        try:
+            requests.post(gas_url, json=data, timeout=4)
+        except Exception as e:
+            st.warning(f"⚠️ 雲端即時同步暫未成功（本地硬碟已保存安全）: {e}")
 
 def parse_track_time(raw_val):
     if raw_val is None: return None, ""
@@ -810,13 +1005,7 @@ def generate_auto_track_schedule(eid, ename):
             class_letter = c[-1].upper() if len(c) > 1 else "A"
             assigned_lane = lane_map.get(class_letter, 1)
             for heat_idx, (_, r) in enumerate(c_df.iterrows()):
-                rows.append({
-                    "組別": f"組別{heat_idx + 1}",
-                    "線道": assigned_lane,
-                    "班別": r["班別"],
-                    "學號": str(r["學號"]),
-                    "姓名": str(r["姓名"])
-                })
+                rows.append({"組別": f"組別{heat_idx + 1}", "線道": assigned_lane, "班別": r["班別"], "學號": str(r["學號"]), "姓名": str(r["姓名"])})
 
     if not rows:
         for grp_num in [1, 2]:
@@ -926,9 +1115,16 @@ if "df_students" not in st.session_state:
 st.sidebar.title("🏃 陸運會行政平台")
 st.sidebar.caption(f"{cfg['school_name']}\n{cfg['session_title']}")
 
+# 側邊欄同步狀態動態徽章
+gas_active = bool(cfg.get("gas_api_url", "").strip())
+if gas_active:
+    st.sidebar.success("🟢 Google 雲端自動同步中")
+else:
+    st.sidebar.info("💾 本地硬碟模式運行中")
+
 if "df_students" in st.session_state:
     stu_count = len(st.session_state["df_students"])
-    st.sidebar.success(f"🟢 已載入學生名冊\n（共 {stu_count} 人，免再上傳）")
+    st.sidebar.success(f"🟢 已載入學生名冊 ({stu_count} 人)")
 else:
     st.sidebar.warning("🟠 尚未建立學生名冊")
 
@@ -1028,7 +1224,7 @@ if menu == "1. 體育科主任：各班各項目配額設定":
             st.success(f"{target_grade} 年級個人賽配額及班際接力設定已成功儲存！")
 
 # ----------------------------------------------------
-# 模組 2：班主任報名登記 (滿額取消顯示項目)
+# 模組 2：班主任報名登記 (滿額取消顯示項目 ＋ 單班 Word 匯出)
 # ----------------------------------------------------
 elif menu == "2. 班主任：學生選拔報名登記":
     st.title("👨‍🏫 班主任：學生選拔報名登記")
@@ -1113,9 +1309,29 @@ elif menu == "2. 班主任：學生選拔報名登記":
                         st.caption("⚪ 未選報個人賽")
 
             st.write("---")
-            if st.button(f"💾 儲存 {c_pick} 個人賽報名名單", type="primary"):
-                save_class_reg(c_pick, records_to_save)
-                st.success(f"🎉 {c_pick} 個人賽報名名冊已成功儲存至伺服器！（共登記 {len(records_to_save)} 人次）")
+            c_save_reg, c_print_class = st.columns(2)
+            with c_save_reg:
+                if st.button(f"💾 儲存 {c_pick} 個人賽報名名單", type="primary", use_container_width=True):
+                    save_class_reg(c_pick, records_to_save)
+                    st.success(f"🎉 {c_pick} 個人賽報名名冊已成功儲存至伺服器！（共登記 {len(records_to_save)} 人次）")
+
+            with c_print_class:
+                class_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_{c_pick}_參賽道次排序名單.docx"
+                if st.button(f"📄 產生【{c_pick}】參賽名冊與道次排序表 (.docx)", type="secondary", use_container_width=True):
+                    with st.spinner(f"正在編排 {c_pick} 學生出賽場次、組別與線道..."):
+                        build_class_entry_doc([c_pick], cfg["school_name"], cfg["session_title"], class_doc_name)
+                        with open(class_doc_name, "rb") as fp:
+                            st.session_state[f"class_entry_bytes_{c_pick}"] = fp.read()
+                        st.success(f"🎉 {c_pick} 參賽名冊已排版完成！請點擊下方按鈕下載：")
+
+            if f"class_entry_bytes_{c_pick}" in st.session_state:
+                st.download_button(
+                    label=f"📥 下載【{c_pick}】參賽資料與道次排序表 (.docx)",
+                    data=st.session_state[f"class_entry_bytes_{c_pick}"],
+                    file_name=class_doc_name,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
+                )
 
         if grade in [4, 5, 6]:
             with tabs[1]:
@@ -1290,13 +1506,12 @@ elif menu == "3. 自動排線與主任線上微調":
             st.info("💡 此場為徑賽決賽，道次將在初賽成績錄入完畢後，由系統自動依種子規則 (3,4,5,6,7,2,1,8) 自動產生！")
 
 # ----------------------------------------------------
-# 模組 4：一鍵匯出 Word 秩序冊與裁判執法表 (只匯出 100, 200, 400 項目)
+# 模組 4：一鍵匯出 Word 秩序冊與各類報表 (只匯出 100, 200, 400 項目 ＋ 24 班名冊套裝)
 # ----------------------------------------------------
 elif menu == "4. 一鍵匯出 Word 秩序冊":
-    st.title("📄 匯出全校比賽程序秩序冊與裁判執法表")
+    st.title("📄 匯出全校比賽程序秩序冊、裁判執法表與班別名冊")
     st.write(f"當前大會抬頭：**{cfg['school_name']}** ｜ **{cfg['session_title']}**")
 
-    # 1. 大會秩序冊 (87 場全套)
     st.subheader("📘 大會程序秩序冊（全校 87 場次完整編排）")
     st.info("💡 **全自動模式**：系統彙整全校各班名冊，自動完成 87 場次分組排線，生成完整 Word 秩序冊。")
     out_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_陸運會程序.docx"
@@ -1317,7 +1532,6 @@ elif menu == "4. 一鍵匯出 Word 秩序冊":
         )
 
     st.write("---")
-    # 2. 裁判執法夾板記錄表 (依規程：只匯出 100, 200, 400 項目)
     st.subheader("📋 裁判執法夾板記錄表（賽前批次匯出：100 / 200 / 400 項目）")
     st.info(
         "💡 **賽前夾板列印專用**：依賽會規程，此處**僅匯出已確定選手之 100系列（初賽）、200系列（田賽／200米）及 400系列（接力）**。\n"
@@ -1329,7 +1543,6 @@ elif menu == "4. 一鍵匯出 Word 秩序冊":
     if st.button("🖨️ 一鍵生成賽前裁判記錄表 (100, 200, 400 項目獨立分頁)", type="primary"):
         with st.spinner("正在篩選並排版 100、200、400 項目裁判記錄表..."):
             all_events = auto_compile_events_from_database()
-            # 依要求只過濾 100、200、400 項目
             filtered_events = [ev for ev in all_events if int(ev["id"]) // 100 in [1, 2, 4]]
             build_score_sheets_doc(filtered_events, cfg["school_name"], cfg["session_title"], all_sheets_doc_name)
             with open(all_sheets_doc_name, "rb") as fp: st.session_state["generated_all_sheets_docx"] = fp.read()
@@ -1340,6 +1553,31 @@ elif menu == "4. 一鍵匯出 Word 秩序冊":
             label="📥 下載裁判執法記錄表套裝 (100, 200, 400 項目) (.docx)",
             data=st.session_state["generated_all_sheets_docx"],
             file_name=all_sheets_doc_name,
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+
+    st.write("---")
+    st.subheader("🏫 各班參賽通知名冊（全校 24 班打包套裝）")
+    st.info("💡 **體育科主任分發專用**：將全校 24 班的參賽名冊、組別、線道與出場排序編排為一個 Word 檔，每班自動獨立分頁（Page Break），直接印出即可分發至各班主任信箱！")
+
+    all_class_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_全校各班參賽道次名冊套裝.docx"
+
+    if st.button("🖨️ 一鍵生成全校 24 班參賽名單套裝 (.docx - 每班獨立一頁)", type="primary"):
+        if "df_students" not in st.session_state:
+            st.warning("⚠️ 請先載入學生名冊！")
+        else:
+            with st.spinner("正在為全校 24 班自動對應項目、組別、線道與出場次序..."):
+                all_cl = sorted(st.session_state["df_students"]["班別"].unique())
+                build_class_entry_doc(all_cl, cfg["school_name"], cfg["session_title"], all_class_doc_name)
+                with open(all_class_doc_name, "rb") as fp:
+                    st.session_state["all_class_entry_bytes"] = fp.read()
+                st.success("🎉 全校各班參賽名冊套裝已成功生成！請點擊下方按鈕下載：")
+
+    if "all_class_entry_bytes" in st.session_state:
+        st.download_button(
+            label="📥 下載全校各班參賽道次名冊套裝 (.docx)",
+            data=st.session_state["all_class_entry_bytes"],
+            file_name=all_class_doc_name,
             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
 
@@ -1471,12 +1709,10 @@ elif menu == "5. 現場成績錄入與班名次統計":
                 st.success(f"🎉 初賽前 8 名選手已自動完成跨組別排序，並依種子線道 (3,4,5,6,7,2,1,8) 鎖定推入【場次 {final_target_eid} 決賽】！")
 
         else:
-            # 300 系列徑賽決賽處理區：增加即時列印按鈕
             c_f_head, c_f_print = st.columns([3, 1.2])
             with c_f_head:
                 st.subheader(f"🏁 【場次 {t_eid} 決賽】{t_ename} 成績錄入與給分")
             with c_f_print:
-                # 300 項目在此即時生成專屬裁判記錄紙 (印有 8 強姓名與種子道次)
                 final_sheet_name = f"決賽裁判記錄表_場次{t_eid}_{t_ename}.docx"
                 if st.button(f"🖨️ 產生【場次 {t_eid}】決賽裁判記錄紙", key=f"print_f_{t_eid}"):
                     final_ev_data = [ev for ev in auto_compile_events_from_database() if str(ev["id"]) == str(t_eid)]
@@ -1788,20 +2024,91 @@ elif menu == "5. 現場成績錄入與班名次統計":
                 )
 
 # ----------------------------------------------------
-# 模組 6：大會全域設定
+# 模組 6：大會全域設定 ＋ 雙保險同步管理中樞
 # ----------------------------------------------------
 elif menu == "⚙️ 大會全域設定":
-    st.title("⚙️ 體育科主任：大會全域設定")
-    s_name = st.text_input("學校全銜", value=cfg["school_name"])
-    s_sess = st.text_input("運動會屆別／年度", value=cfg["session_title"])
-    min_b = st.number_input("接力正選男生預設最低人數", min_value=0, max_value=3, value=cfg.get("relay_min_boys", 1))
-    min_g = st.number_input("接力正選女生預設最低人數", min_value=0, max_value=3, value=cfg.get("relay_min_girls", 1))
+    st.title("⚙️ 體育科主任：大會全域設定與同步中樞")
     
-    if st.button("💾 儲存全域設定", type="primary"):
-        save_config({
-            "school_name": s_name,
-            "session_title": s_sess,
-            "relay_min_boys": int(min_b),
-            "relay_min_girls": int(min_g)
-        })
-        st.success("大會設定已更新！全系統即時生效。")
+    st.subheader("🏫 大會基本規程設定")
+    c_g1, c_g2 = st.columns(2)
+    with c_g1:
+        s_name = st.text_input("學校全銜", value=cfg["school_name"])
+        min_b = st.number_input("接力正選男生預設最低人數", min_value=0, max_value=3, value=cfg.get("relay_min_boys", 1))
+    with c_g2:
+        s_sess = st.text_input("運動會屆別／年度", value=cfg["session_title"])
+        min_g = st.number_input("接力正選女生預設最低人數", min_value=0, max_value=3, value=cfg.get("relay_min_girls", 1))
+    
+    st.write("---")
+    # 方案一：Google Workspace (GAS API) 即時雙向同步
+    st.subheader("🌐 【方案一】Google Workspace 雲端即時雙向同步設定")
+    st.info("💡 填入部署好的 Google Apps Script Web App 網址後，系統會在裁判輸入成績時自動寫入學校 Google Drive，永不因重開機遺失。")
+    
+    gas_url_input = st.text_input(
+        "Google Apps Script 網頁應用程式網址 (Web App URL)",
+        value=cfg.get("gas_api_url", ""),
+        placeholder="https://script.google.com/macros/s/AKfycb.../exec"
+    )
+
+    c_gas_save, c_gas_test = st.columns([2, 3])
+    with c_gas_save:
+        if st.button("💾 儲存並啟用 Google 雲端同步設定", type="primary"):
+            cfg["school_name"] = s_name
+            cfg["session_title"] = s_sess
+            cfg["relay_min_boys"] = int(min_b)
+            cfg["relay_min_girls"] = int(min_g)
+            cfg["gas_api_url"] = gas_url_input.strip()
+            save_config(cfg)
+            st.success("🎉 設定已更新並永久儲存！")
+            st.rerun()
+
+    with c_gas_test:
+        if gas_url_input.strip():
+            if st.button("🔍 測試雲端 API 連線狀態"):
+                try:
+                    with st.spinner("正在測試與學校 Google Drive 連線..."):
+                        t_res = requests.get(gas_url_input.strip(), timeout=5)
+                        if t_res.status_code == 200:
+                            st.success("🟢 連線成功！Google Apps Script API 運作完全正常。")
+                        else:
+                            st.error(f"🔴 伺服器回應異常碼: {t_res.status_code}")
+                except Exception as err:
+                    st.error(f"🔴 連線失敗，請檢查網址與存取權限: {err}")
+
+    st.write("---")
+    # 方案二：全量數據包備份與還原 (雙保險應急防護)
+    st.subheader("📦 【方案二】手動全量數據包 (匯出備份 ＋ 上傳還原)")
+    st.info("💡 **離線抗災與跨設備同步專用**：可將目前全校所有名冊、配額矩陣、排線道次與比賽積分打包為一個檔案備份到本地；亦可在新設備上傳覆蓋還原。")
+
+    col_sync_dl, col_sync_ul = st.columns(2)
+
+    with col_sync_dl:
+        # 打包全大會所有資料
+        all_backup_data = {
+            "config": get_config(),
+            "quota_matrix": get_quota_matrix(),
+            "tournament_results": get_tournament_results(),
+            "registrations": load_all_registrations().to_dict(orient="records")
+        }
+        json_backup_bytes = json.dumps(all_backup_data, ensure_ascii=False, indent=2).encode('utf-8')
+        
+        st.download_button(
+            label="📥 匯出大會全量備份包 (.json)",
+            data=json_backup_bytes,
+            file_name=f"{cfg['school_name']}_大會全量備份包.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
+    with col_sync_ul:
+        uploaded_backup = st.file_uploader("📤 上傳備份包以同步還原此設備", type=["json"], key="backup_restore_uploader")
+        if uploaded_backup is not None:
+            if st.button("🚀 確認覆蓋並套用備份資料", type="secondary", use_container_width=True):
+                try:
+                    loaded_data = json.load(uploaded_backup)
+                    if "config" in loaded_data: save_config(loaded_data["config"])
+                    if "quota_matrix" in loaded_data: save_quota_matrix(loaded_data["quota_matrix"])
+                    if "tournament_results" in loaded_data: save_tournament_results(loaded_data["tournament_results"])
+                    st.success("🎉 備份資料已成功載入並覆蓋此設備！")
+                    st.rerun()
+                except Exception as err:
+                    st.error(f"❌ 解析備份檔失敗: {err}")
