@@ -149,10 +149,8 @@ def make_table_cant_split(table):
 def build_class_blank_registration_doc(classes_to_export, school_name, session_title, output_filename):
     doc = Document()
     for section in doc.sections:
-        # 強制標準 A4 尺寸
         section.page_width = Inches(8.27)
         section.page_height = Inches(11.69)
-        # 精密邊距：釋放縱向高度，確保 35 人 ＋ 接力 ＋ 簽署欄穩停在一頁 A4
         section.top_margin = Inches(0.3)
         section.bottom_margin = Inches(0.3)
         section.left_margin = Inches(0.35)
@@ -186,7 +184,7 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         r1.font.size = Pt(13.5)
         r1.font.color.rgb = RGBColor(0, 51, 102)
 
-        # 2. 名額限制摘要盒 (緊密單行行距)
+        # 2. 名額限制摘要盒
         p_qbox = doc.add_paragraph()
         p_qbox.paragraph_format.space_before = Pt(0)
         p_qbox.paragraph_format.space_after = Pt(2)
@@ -1426,7 +1424,7 @@ def auto_compile_events_from_database():
     return events_data
 
 # =====================================================================
-# 3. 唯讀公眾看板渲染模組 (Spectator Dashboard)
+# 3. 唯讀公眾看板渲染模組 (Spectator Dashboard - 5大即時分頁)
 # =====================================================================
 def render_spectator_dashboard(cfg):
     st.markdown(
@@ -1442,13 +1440,15 @@ def render_spectator_dashboard(cfg):
     t_data = get_tournament_results()
     df_stu = st.session_state.get("df_students", None)
 
-    tab_ranks, tab_results, tab_search, tab_schedule = st.tabs([
+    tab_ranks, tab_event_search, tab_results, tab_stu_search, tab_schedule = st.tabs([
         "🏆 班際總分即時榜",
+        "🎯 按場次查詢 (道次/賽果)",
         "🥇 最新決賽賽果",
-        "🔍 學生道次快速查詢",
+        "🔍 按學生查詢道次",
         "📅 全日賽程進度一覽"
     ])
 
+    # 1. 班際總分即時榜
     with tab_ranks:
         if df_stu is None:
             st.info("💡 賽事計分大榜即將上線，敬請期待！")
@@ -1521,6 +1521,65 @@ def render_spectator_dashboard(cfg):
                             medal = ["🥇", "🥈", "🥉", "4.", "5."][idx] if idx < 5 else f"{idx+1}."
                             st.write(f"{medal} **{r['班別']}** — {r['平均分']:.3f} 分")
 
+    # 2. 按場次查詢 (道次/賽果)
+    with tab_event_search:
+        st.markdown("##### 🎯 查詢指定場次出賽名單、道次及完賽結果")
+        event_select_options = [f"{eid} ｜ {MASTER_EVENTS[eid]}" for eid in sorted(MASTER_EVENTS.keys())]
+        chosen_ev_str = st.selectbox("請選擇或搜尋場次編號", event_select_options, key="public_event_select")
+        p_eid = int(chosen_ev_str.split(" ｜ ")[0])
+        p_ename = chosen_ev_str.split(" ｜ ")[1]
+
+        ev_results = [r for r in t_data.get("results", []) if r.get("event_id") == p_eid]
+        ev_qualifiers = t_data.get("qualifiers", {}).get(str(p_eid), [])
+
+        if ev_results:
+            st.success(f"🏁 【場次 {p_eid}】{p_ename} —— **賽事已完賽並公布成績**")
+            st.markdown("###### 🏆 本場次前 8 名獲獎名冊：")
+            r_df = pd.DataFrame(ev_results).sort_values(by="rank")[["rank", "class", "points"]].rename(
+                columns={"rank": "名次", "class": "班別", "points": "獲取積分"}
+            )
+            medals = {1: "🥇 冠軍", 2: "🥈 亞軍", 3: "🥉 季軍", 4: "第 4 名", 5: "第 5 名", 6: "第 6 名", 7: "第 7 名", 8: "第 8 名"}
+            r_df["榮銜"] = r_df["名次"].map(medals).fillna("-")
+            st.dataframe(r_df[["名次", "榮銜", "班別", "獲取積分"]], hide_index=True, use_container_width=True)
+            st.write("---")
+        elif ev_qualifiers:
+            st.info(f"🔥 【場次 {p_eid}】{p_ename} —— **初賽晉級名單已產生（決賽種子線道已排定）**")
+        else:
+            st.caption(f"📋 【場次 {p_eid}】{p_ename} —— **選手出賽序與分組道次名冊如下**：")
+
+        if 485 <= p_eid <= 487:
+            sch_relay = load_custom_schedule(p_eid)
+            if sch_relay is None: sch_relay = generate_auto_relay_schedule(p_eid, p_ename)
+            st.dataframe(sch_relay[["線道", "班別", "第1棒", "第2棒", "第3棒", "第4棒"]], hide_index=True, use_container_width=True)
+        elif 229 <= p_eid <= 260:
+            sch_field = load_custom_schedule(p_eid)
+            if sch_field is None: sch_field = generate_auto_field_schedule(p_eid, p_ename)
+            valid_field = sch_field[sch_field["姓名"] != "（尚無報名）"]
+            st.dataframe(valid_field[["出場次序", "班別", "學號", "姓名"]], hide_index=True, use_container_width=True)
+        elif (101 <= p_eid <= 124) or (225 <= eid <= 228 if 'eid' in locals() else (225 <= p_eid <= 228)):
+            sch_track = load_custom_schedule(p_eid)
+            if sch_track is None: sch_track = generate_auto_track_schedule(p_eid, p_ename)
+            track_heats = sorted(sch_track["組別"].unique())
+            heat_tabs = st.tabs([f"🏃 {h}" for h in track_heats])
+            for h_i, h_nm in enumerate(track_heats):
+                with heat_tabs[h_i]:
+                    sub_h = sch_track[sch_track["組別"] == h_nm].sort_values(by="線道")
+                    valid_track = sub_h[sub_h["姓名"] != "（尚無報名）"]
+                    st.dataframe(valid_track[["線道", "班別", "學號", "姓名"]], hide_index=True, use_container_width=True)
+        else:
+            if ev_qualifiers:
+                df_q = pd.DataFrame(ev_qualifiers).sort_values(by="lane")
+                st.dataframe(
+                    df_q[["lane", "rank", "class", "name", "heat_time"]].rename(
+                        columns={"lane": "決賽線道", "rank": "初賽排名", "class": "班別", "name": "姓名", "heat_time": "初賽秒數"}
+                    ),
+                    hide_index=True,
+                    use_container_width=True
+                )
+            else:
+                st.warning("⏳ 此場為徑賽決賽，初賽完賽後將即時自動排入決賽種子道次！")
+
+    # 3. 最新決賽賽果
     with tab_results:
         results_list = t_data.get("results", [])
         if not results_list:
@@ -1541,14 +1600,15 @@ def render_spectator_dashboard(cfg):
                     r_df["榮銜"] = r_df["名次"].map(medals).fillna("-")
                     st.dataframe(r_df[["名次", "榮銜", "班別", "得分"]], hide_index=True, use_container_width=True)
 
-    with tab_search:
-        st.markdown("##### 🔎 查詢學生參賽場次、組別與線道")
+    # 4. 按學生查詢道次
+    with tab_stu_search:
+        st.markdown("##### 🔎 輸入學生姓名或學號，秒查孩子參賽項目與道次")
         if df_stu is None:
             st.warning("⚠️ 名冊建置中，請稍後查詢。")
         else:
             c_s1, c_s2 = st.columns([1, 2])
-            with c_s1: search_class = st.selectbox("按班別篩選", ["-- 全部班別 --"] + sorted(df_stu["班別"].unique()))
-            with c_s2: search_name = st.text_input("或輸入學生姓名／學號關鍵字", placeholder="例如：陳大文、03")
+            with c_s1: search_class = st.selectbox("按班別篩選", ["-- 全部班別 --"] + sorted(df_stu["班別"].unique()), key="pub_search_class")
+            with c_s2: search_name = st.text_input("輸入學生姓名／學號關鍵字", placeholder="例如：陳大文、03", key="pub_search_name")
 
             target_classes = sorted(df_stu["班別"].unique()) if search_class == "-- 全部班別 --" else [search_class]
             
@@ -1576,6 +1636,7 @@ def render_spectator_dashboard(cfg):
                 st.caption(f"共找到 {len(df_query)} 筆參賽記錄：")
                 st.dataframe(df_query, hide_index=True, use_container_width=True)
 
+    # 5. 全日賽程進度一覽
     with tab_schedule:
         st.markdown("##### 📋 大會全日 87 場次賽程進度")
         finished_ids = {r["event_id"] for r in t_data.get("results", [])}
@@ -1761,7 +1822,8 @@ else:
                     label="📥 下載全校 24 班標準選拔報名表套裝 (.docx)",
                     data=st.session_state["all_blank_reg_bytes"],
                     file_name=all_blank_doc_name,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True
                 )
 
     # ----------------------------------------------------
