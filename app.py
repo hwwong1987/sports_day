@@ -1,5 +1,5 @@
 # app.py
-# 基督教聖約教會堅樂小學 - 陸運會行政自動化、成績計算、唯讀看板與標準報名表系統 (旗艦 All-in-One 完整版)
+# 基督教聖約教會堅樂小學 - 陸運會行政自動化、成績計算、唯讀看板與項目動態自訂系統 (旗艦完整版)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -19,6 +19,7 @@ CONFIG_PATH = "quota_config.json"
 QUOTA_MATRIX_PATH = "quota_matrix.json"
 STUDENTS_FILE = "saved_students.xlsx"
 RESULTS_FILE = "tournament_results.json"
+EVENTS_CONFIG_PATH = "custom_events.json"
 REG_DATA_DIR = "registrations_data"
 SCHEDULES_DIR = "schedules_data"
 
@@ -26,83 +27,191 @@ os.makedirs(REG_DATA_DIR, exist_ok=True)
 os.makedirs(SCHEDULES_DIR, exist_ok=True)
 
 ZH_TO_NUM = {"一": "1", "二": "2", "三": "3", "四": "4", "五": "5", "六": "6"}
+NUM_TO_ZH = {1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六"}
 
 def get_grade_digit(text):
     if not text: return "1"
     first = str(text).strip()[0]
     return ZH_TO_NUM.get(first, first if first.isdigit() else "1")
 
-# 決賽種子分配順序 (1名->3線, 2名->4線, 3名->5線, 4名->6線, 5名->7線, 6名->2線, 7名->1線, 8名->8線)
 FINAL_SEED_LANES = [3, 4, 5, 6, 7, 2, 1, 8]
-
-MASTER_EVENTS = {
-    # 1XX: 徑賽初賽 (不評分，分組排列，選拔前8名進入決賽)
-    101: "一年級男子40米跑", 102: "一年級女子40米跑",
-    103: "二年級男子40米跑", 104: "二年級女子40米跑",
-    105: "三年級男子40米跑", 106: "三年級女子40米跑",
-    107: "一年級男子60米跑", 108: "一年級女子60米跑",
-    109: "二年級男子60米跑", 110: "二年級女子60米跑",
-    111: "三年級男子60米跑", 112: "三年級女子60米跑",
-    113: "四年級男子60米跑", 114: "四年級女子60米跑",
-    115: "五年級男子60米跑", 116: "五年級女子60米跑",
-    117: "六年級男子60米跑", 118: "六年級女子60米跑",
-    119: "四年級男子100米跑", 120: "四年級女子100米跑",
-    121: "五年級男子100米跑", 122: "五年級女子100米跑",
-    123: "六年級男子100米跑", 124: "六年級女子100米跑",
-
-    # 2XX: 200m直接決賽及全校田賽決賽 (給分 9-1)
-    225: "五年級男子200米跑", 226: "五年級女子200米跑",
-    227: "六年級男子200米跑", 228: "六年級女子200米跑",
-    229: "一年級男子擲木球", 230: "一年級女子擲木球",
-    231: "二年級男子擲木球", 232: "二年級女子擲木球",
-    233: "三年級男子擲木球", 234: "三年級女子擲木球",
-    235: "四年級男子擲壘球", 236: "四年級女子擲壘球",
-    237: "五年級男子擲壘球", 238: "五年級女子擲壘球",
-    239: "六年級男子擲壘球", 240: "六年級女子擲壘球",
-    241: "一年級男子立定跳遠", 242: "一年級女子立定跳遠",
-    243: "二年級男子立定跳遠", 244: "二年級女子立定跳遠",
-    245: "三年級男子立定跳遠", 246: "三年級女子立定跳遠",
-    247: "四年級男子助跑跳遠", 248: "四年級女子助跑跳遠",
-    249: "五年級男子助跑跳遠", 250: "五年級女子助跑跳遠",
-    251: "六年級男子助跑跳遠", 252: "六年級女子助跑跳遠",
-    253: "一年級男子單人跳前繩", 254: "一年級女子單人跳前繩",
-    255: "二年級男子單人跳前繩", 256: "二年級女子單人跳前繩",
-    257: "三年級男子單人跳前繩", 258: "三年級女子單人跳前繩",
-    259: "四年級男子單人跳前繩", 260: "四年級女子單人跳前繩",
-
-    # 3XX: 徑賽決賽 (給分 9-1，對應初賽+260)
-    361: "一年級男子40米跑(決賽)", 362: "一年級女子40米跑(決賽)",
-    363: "二年級男子40米跑(決賽)", 364: "二年級女子40米跑(決賽)",
-    365: "三年級男子40米跑(決賽)", 366: "三年級女子40米跑(決賽)",
-    367: "一年級男子60米跑(決賽)", 368: "一年級女子60米跑(決賽)",
-    369: "二年級男子60米跑(決賽)", 370: "二年級女子60米跑(決賽)",
-    371: "三年級男子60米跑(決賽)", 372: "三年級女子60米跑(決賽)",
-    373: "四年級男子60米跑(決賽)", 374: "四年級女子60米跑(決賽)",
-    375: "五年級男子60米跑(決賽)", 376: "五年級女子60米跑(決賽)",
-    377: "六年級男子60米跑(決賽)", 378: "六年級女子60米跑(決賽)",
-    379: "四年級男子100米跑(決賽)", 380: "四年級女子100米跑(決賽)",
-    381: "五年級男子100米跑(決賽)", 382: "五年級女子100米跑(決賽)",
-    383: "六年級男子100米跑(決賽)", 384: "六年級女子100米跑(決賽)",
-
-    # 4XX: 接力決賽 (給分 9-1)
-    485: "四年級4×100米接力跑",
-    486: "五年級4×100米接力跑",
-    487: "六年級4×100米接力跑",
-}
-
 POINT_SYSTEM = {1: 9, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2, 8: 1}
 
-GRADE_EVENTS = {
-    1: ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"],
-    2: ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"],
-    3: ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"],
-    4: ["60米跑", "100米跑", "擲壘球", "助跑跳遠", "單人跳前繩"],
-    5: ["60米跑", "100米跑", "200米跑", "擲壘球", "助跑跳遠"],
-    6: ["60米跑", "100米跑", "200米跑", "擲壘球", "助跑跳遠"],
-}
+# =====================================================================
+# 項目動態自訂資料庫與自動配號核心
+# =====================================================================
+DEFAULT_EVENTS = [
+    # 一年級
+    {"id": "ev_101", "grade": 1, "name": "40米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 101, "final_id": 361},
+    {"id": "ev_102", "grade": 1, "name": "40米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 102, "final_id": 362},
+    {"id": "ev_107", "grade": 1, "name": "60米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 107, "final_id": 367},
+    {"id": "ev_108", "grade": 1, "name": "60米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 108, "final_id": 368},
+    {"id": "ev_229", "grade": 1, "name": "擲木球", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 229},
+    {"id": "ev_230", "grade": 1, "name": "擲木球", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 230},
+    {"id": "ev_241", "grade": 1, "name": "立定跳遠", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 241},
+    {"id": "ev_242", "grade": 1, "name": "立定跳遠", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 242},
+    {"id": "ev_253", "grade": 1, "name": "單人跳前繩", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 253},
+    {"id": "ev_254", "grade": 1, "name": "單人跳前繩", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 254},
+    # 二年級
+    {"id": "ev_103", "grade": 2, "name": "40米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 103, "final_id": 363},
+    {"id": "ev_104", "grade": 2, "name": "40米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 104, "final_id": 364},
+    {"id": "ev_109", "grade": 2, "name": "60米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 109, "final_id": 369},
+    {"id": "ev_110", "grade": 2, "name": "60米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 110, "final_id": 370},
+    {"id": "ev_231", "grade": 2, "name": "擲木球", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 231},
+    {"id": "ev_232", "grade": 2, "name": "擲木球", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 232},
+    {"id": "ev_243", "grade": 2, "name": "立定跳遠", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 243},
+    {"id": "ev_244", "grade": 2, "name": "立定跳遠", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 244},
+    {"id": "ev_255", "grade": 2, "name": "單人跳前繩", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 255},
+    {"id": "ev_256", "grade": 2, "name": "單人跳前繩", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 256},
+    # 三年級
+    {"id": "ev_105", "grade": 3, "name": "40米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 105, "final_id": 365},
+    {"id": "ev_106", "grade": 3, "name": "40米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 106, "final_id": 366},
+    {"id": "ev_111", "grade": 3, "name": "60米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 111, "final_id": 371},
+    {"id": "ev_112", "grade": 3, "name": "60米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 112, "final_id": 372},
+    {"id": "ev_233", "grade": 3, "name": "擲木球", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 233},
+    {"id": "ev_234", "grade": 3, "name": "擲木球", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 234},
+    {"id": "ev_245", "grade": 3, "name": "立定跳遠", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 245},
+    {"id": "ev_246", "grade": 3, "name": "立定跳遠", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 246},
+    {"id": "ev_257", "grade": 3, "name": "單人跳前繩", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 257},
+    {"id": "ev_258", "grade": 3, "name": "單人跳前繩", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 258},
+    # 四年級
+    {"id": "ev_113", "grade": 4, "name": "60米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 113, "final_id": 373},
+    {"id": "ev_114", "grade": 4, "name": "60米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 114, "final_id": 374},
+    {"id": "ev_119", "grade": 4, "name": "100米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 119, "final_id": 379},
+    {"id": "ev_120", "grade": 4, "name": "100米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 120, "final_id": 380},
+    {"id": "ev_235", "grade": 4, "name": "擲壘球", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 235},
+    {"id": "ev_236", "grade": 4, "name": "擲壘球", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 236},
+    {"id": "ev_247", "grade": 4, "name": "助跑跳遠", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 247},
+    {"id": "ev_248", "grade": 4, "name": "助跑跳遠", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 248},
+    {"id": "ev_259", "grade": 4, "name": "單人跳前繩", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 259},
+    {"id": "ev_260", "grade": 4, "name": "單人跳前繩", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 260},
+    {"id": "ev_485", "grade": 4, "name": "4×100米接力跑", "category": "接力賽", "gender": "混合", "format": "直接決賽", "heat_id": None, "final_id": 485},
+    # 五年級
+    {"id": "ev_115", "grade": 5, "name": "60米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 115, "final_id": 375},
+    {"id": "ev_116", "grade": 5, "name": "60米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 116, "final_id": 376},
+    {"id": "ev_121", "grade": 5, "name": "100米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 121, "final_id": 381},
+    {"id": "ev_122", "grade": 5, "name": "100米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 122, "final_id": 382},
+    {"id": "ev_225", "grade": 5, "name": "200米跑", "category": "徑賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 225},
+    {"id": "ev_226", "grade": 5, "name": "200米跑", "category": "徑賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 226},
+    {"id": "ev_237", "grade": 5, "name": "擲壘球", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 237},
+    {"id": "ev_238", "grade": 5, "name": "擲壘球", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 238},
+    {"id": "ev_249", "grade": 5, "name": "助跑跳遠", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 249},
+    {"id": "ev_250", "grade": 5, "name": "助跑跳遠", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 250},
+    {"id": "ev_486", "grade": 5, "name": "4×100米接力跑", "category": "接力賽", "gender": "混合", "format": "直接決賽", "heat_id": None, "final_id": 486},
+    # 六年級
+    {"id": "ev_117", "grade": 6, "name": "60米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 117, "final_id": 377},
+    {"id": "ev_118", "grade": 6, "name": "60米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 118, "final_id": 378},
+    {"id": "ev_123", "grade": 6, "name": "100米跑", "category": "徑賽", "gender": "男", "format": "初賽->決賽", "heat_id": 123, "final_id": 383},
+    {"id": "ev_124", "grade": 6, "name": "100米跑", "category": "徑賽", "gender": "女", "format": "初賽->決賽", "heat_id": 124, "final_id": 384},
+    {"id": "ev_227", "grade": 6, "name": "200米跑", "category": "徑賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 227},
+    {"id": "ev_228", "grade": 6, "name": "200米跑", "category": "徑賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 228},
+    {"id": "ev_239", "grade": 6, "name": "擲壘球", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 239},
+    {"id": "ev_240", "grade": 6, "name": "擲壘球", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 240},
+    {"id": "ev_251", "grade": 6, "name": "助跑跳遠", "category": "田賽", "gender": "男", "format": "直接決賽", "heat_id": None, "final_id": 251},
+    {"id": "ev_252", "grade": 6, "name": "助跑跳遠", "category": "田賽", "gender": "女", "format": "直接決賽", "heat_id": None, "final_id": 252},
+    {"id": "ev_487", "grade": 6, "name": "4×100米接力跑", "category": "接力賽", "gender": "混合", "format": "直接決賽", "heat_id": None, "final_id": 487},
+]
+
+def load_events_config():
+    if os.path.exists(EVENTS_CONFIG_PATH):
+        try:
+            with open(EVENTS_CONFIG_PATH, "r", encoding="utf-8") as f: return json.load(f)
+        except Exception: pass
+    return list(DEFAULT_EVENTS)
+
+def save_events_config(events_list):
+    with open(EVENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(events_list, f, ensure_ascii=False, indent=2)
+
+def allocate_event_ids(category, format_choice, current_events, exclude_ev_id=None):
+    """
+    智能自動配號：根據類別與賽制，自動尋找不重複之場次編號
+    """
+    used_ids = set()
+    for ev in current_events:
+        if ev.get("id") == exclude_ev_id: continue
+        if ev.get("heat_id"): used_ids.add(int(ev["heat_id"]))
+        if ev.get("final_id"): used_ids.add(int(ev["final_id"]))
+
+    if category == "接力賽":
+        cand = 485
+        while cand in used_ids: cand += 1
+        return None, cand
+
+    elif category == "田賽":
+        cand = 229
+        while cand in used_ids: cand += 1
+        return None, cand
+
+    else: # 徑賽
+        if format_choice == "直接決賽":
+            cand = 225
+            while cand in used_ids: cand += 1
+            return None, cand
+        else: # 初賽->決賽
+            # 尋找 1XX 區間初賽號
+            h_cand = 101
+            while h_cand in used_ids: h_cand += 1
+            # 決賽號優先分配 h_cand + 260
+            f_cand = h_cand + 260
+            if f_cand in used_ids:
+                f_cand = 361
+                while f_cand in used_ids: f_cand += 1
+            return h_cand, f_cand
+
+def build_runtime_registry():
+    events_list = load_events_config()
+    grade_events_map = {g: [] for g in range(1, 7)}
+    master_events_dict = {}
+    event_meta_dict = {}
+
+    for ev in events_list:
+        g = int(ev["grade"])
+        name = ev["name"]
+        gender = ev["gender"]
+        cat = ev["category"]
+        fmt = ev["format"]
+        g_zh = NUM_TO_ZH.get(g, str(g))
+
+        if cat != "接力賽":
+            if name not in grade_events_map[g]:
+                grade_events_map[g].append(name)
+
+        if cat == "接力賽":
+            fid = int(ev["final_id"])
+            title = f"{g_zh}年級{name}" if not name.startswith(f"{g_zh}年級") else name
+            master_events_dict[fid] = title
+            event_meta_dict[fid] = {"type": "relay", "stage": "final", "grade": g, "gender": gender, "item_name": name, "ev_id": ev["id"]}
+        elif cat == "田賽":
+            fid = int(ev["final_id"])
+            title = f"{g_zh}年級{gender}子{name}"
+            master_events_dict[fid] = title
+            event_meta_dict[fid] = {"type": "field", "stage": "final", "grade": g, "gender": gender, "item_name": name, "ev_id": ev["id"]}
+        elif cat == "徑賽":
+            if fmt == "初賽->決賽":
+                hid = int(ev["heat_id"]) if ev.get("heat_id") else None
+                fid = int(ev["final_id"]) if ev.get("final_id") else None
+                if hid:
+                    h_title = f"{g_zh}年級{gender}子{name}"
+                    master_events_dict[hid] = h_title
+                    event_meta_dict[hid] = {"type": "track", "stage": "heat", "final_target_id": fid, "grade": g, "gender": gender, "item_name": name, "ev_id": ev["id"]}
+                if fid:
+                    f_title = f"{g_zh}年級{gender}子{name}(決賽)"
+                    master_events_dict[fid] = f_title
+                    event_meta_dict[fid] = {"type": "track", "stage": "final", "heat_source_id": hid, "grade": g, "gender": gender, "item_name": name, "ev_id": ev["id"]}
+            else:
+                fid = int(ev["final_id"])
+                title = f"{g_zh}年級{gender}子{name}"
+                master_events_dict[fid] = title
+                event_meta_dict[fid] = {"type": "track", "stage": "final", "grade": g, "gender": gender, "item_name": name, "ev_id": ev["id"]}
+
+    return grade_events_map, master_events_dict, event_meta_dict
+
+GRADE_EVENTS_MAP, MASTER_EVENTS, EVENT_META = build_runtime_registry()
 
 def get_ordered_grade_events(grade):
-    return GRADE_EVENTS.get(grade, ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"])
+    g_map, _, _ = build_runtime_registry()
+    return g_map.get(grade, ["40米跑", "60米跑", "擲木球", "立定跳遠", "單人跳前繩"])
 
 def get_short_event_name(ev_name):
     return ev_name.replace("米跑", "M").replace("米", "M")
@@ -172,7 +281,7 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         saved_reg = load_class_reg(c_name)
         reg_map = {str(r["學號"]): r["項目"] for r in saved_reg}
 
-        # 1. 大會抬頭
+        # 1. 抬頭
         p_t = doc.add_paragraph()
         p_t.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p_t.paragraph_format.space_before = Pt(0)
@@ -203,7 +312,7 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         r_bg.font.size = Pt(7.5)
         r_bg.bold = True
 
-        # 3. 核心報名表格 (學號, 姓名, 性別, 男子組項目..., 女子組項目...)
+        # 3. 核心報名表格 (動態按項目數量調整欄寬)
         col_count = 3 + n_ev * 2
         total_rows = len(c_students) + 2
         table = doc.add_table(rows=total_rows, cols=col_count)
@@ -211,80 +320,73 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         add_clean_borders(table)
         make_table_cant_split(table)
 
-        col_widths = [0.42, 0.95, 0.4] + [0.58] * n_ev + [0.58] * n_ev
+        remain_w = max(3.0, 7.57 - 1.77)
+        ev_w = round(remain_w / max(1, n_ev * 2), 2)
+        col_widths = [0.42, 0.95, 0.4] + [ev_w] * (n_ev * 2)
+
         for row in table.rows:
             for j, w in enumerate(col_widths):
                 if j < len(row.cells): row.cells[j].width = Inches(w)
 
-        # (1) 學號 跨行合併
+        # 學號
         c_sid = table.cell(0, 0)
         c_sid.merge(table.cell(1, 0))
         c_sid.text = "學號"
         p = c_sid.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.line_spacing = 1.0
         p.runs[0].font.bold = True
         p.runs[0].font.size = Pt(8)
         c_sid.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_sid, top=12, bottom=12, left=5, right=5)
 
-        # (2) 中文姓名 跨行合併
+        # 中文姓名
         c_name_cell = table.cell(0, 1)
         c_name_cell.merge(table.cell(1, 1))
         c_name_cell.text = "中文姓名"
         p = c_name_cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.line_spacing = 1.0
         p.runs[0].font.bold = True
         p.runs[0].font.size = Pt(8)
         c_name_cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_name_cell, top=12, bottom=12, left=5, right=5)
 
-        # (3) 性別 跨行合併
+        # 性別
         c_gen = table.cell(0, 2)
         c_gen.merge(table.cell(1, 2))
         c_gen.text = "性別"
         p = c_gen.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.line_spacing = 1.0
         p.runs[0].font.bold = True
         p.runs[0].font.size = Pt(8)
         c_gen.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_gen, top=12, bottom=12, left=5, right=5)
 
-        # (4) 男子組 跨欄合併
+        # 男子組大標
         c_b_head = table.cell(0, 3).merge(table.cell(0, 3 + n_ev - 1))
         c_b_head.text = "男   子   組"
         p = c_b_head.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.line_spacing = 1.0
         p.runs[0].font.bold = True
         p.runs[0].font.size = Pt(8.5)
         c_b_head.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_b_head, top=12, bottom=12, left=5, right=5)
 
-        # (5) 女子組 跨欄合併
+        # 女子組大標
         c_g_head = table.cell(0, 3 + n_ev).merge(table.cell(0, col_count - 1))
         c_g_head.text = "女   子   組"
         p = c_g_head.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.line_spacing = 1.0
         p.runs[0].font.bold = True
         p.runs[0].font.size = Pt(8.5)
         c_g_head.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_g_head, top=12, bottom=12, left=5, right=5)
 
-        # 第 1 列：項目子表頭與名額上限
+        # 項目子表頭與限額
         for k, ev in enumerate(ev_list):
             s_ev = get_short_event_name(ev)
             b_quota = quotas.get(f"{c_name}_男_{ev}", 2)
@@ -294,8 +396,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
             c_bk.text = f"{s_ev}\n(限{b_quota})"
             p = c_bk.paragraphs[0]
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(0)
-            p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.line_spacing = 1.0
             p.runs[0].font.bold = True
             p.runs[0].font.size = Pt(7)
@@ -306,15 +406,13 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
             c_gk.text = f"{s_ev}\n(限{g_quota})"
             p = c_gk.paragraphs[0]
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(0)
-            p.paragraph_format.space_after = Pt(0)
             p.paragraph_format.line_spacing = 1.0
             p.runs[0].font.bold = True
             p.runs[0].font.size = Pt(7)
             c_gk.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
             set_cell_padding(c_gk, top=10, bottom=10, left=3, right=3)
 
-        # 填入學生名單（男女互斥灰底）
+        # 填入學生資料（男女互斥灰底）
         for i, (_, s) in enumerate(c_students.iterrows()):
             r_idx = i + 2
             sid = str(s["學號"])
@@ -325,40 +423,24 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
             gender_code = "M" if is_boy else "F"
             chosen_item = reg_map.get(sid, "")
 
-            # 學號
             c_s = table.cell(r_idx, 0)
             c_s.text = sid
-            p = c_s.paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(0)
-            p.paragraph_format.space_after = Pt(0)
-            p.paragraph_format.line_spacing = 1.0
-            p.runs[0].font.size = Pt(7.5)
+            c_s.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            c_s.paragraphs[0].runs[0].font.size = Pt(7.5)
             set_cell_padding(c_s, top=8, bottom=8, left=5, right=5)
 
-            # 姓名
             c_n = table.cell(r_idx, 1)
             c_n.text = sname
-            p = c_n.paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(0)
-            p.paragraph_format.space_after = Pt(0)
-            p.paragraph_format.line_spacing = 1.0
-            p.runs[0].font.size = Pt(7.5)
+            c_n.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            c_n.paragraphs[0].runs[0].font.size = Pt(7.5)
             set_cell_padding(c_n, top=8, bottom=8, left=5, right=5)
 
-            # 性別
             c_g = table.cell(r_idx, 2)
             c_g.text = gender_code
-            p = c_g.paragraphs[0]
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p.paragraph_format.space_before = Pt(0)
-            p.paragraph_format.space_after = Pt(0)
-            p.paragraph_format.line_spacing = 1.0
-            p.runs[0].font.size = Pt(7.5)
+            c_g.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+            c_g.paragraphs[0].runs[0].font.size = Pt(7.5)
             set_cell_padding(c_g, top=8, bottom=8, left=5, right=5)
 
-            # 項目欄位
             for k, ev in enumerate(ev_list):
                 col_b_idx = 3 + k
                 col_g_idx = 3 + n_ev + k
@@ -372,9 +454,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
                     c_target_b.text = "✔" if (chosen_item == ev) else ""
                     p = c_target_b.paragraphs[0]
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    p.paragraph_format.space_before = Pt(0)
-                    p.paragraph_format.space_after = Pt(0)
-                    p.paragraph_format.line_spacing = 1.0
                     if p.runs:
                         p.runs[0].font.bold = True
                         p.runs[0].font.size = Pt(8)
@@ -387,14 +466,11 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
                     c_target_g.text = "✔" if (chosen_item == ev) else ""
                     p = c_target_g.paragraphs[0]
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                    p.paragraph_format.space_before = Pt(0)
-                    p.paragraph_format.space_after = Pt(0)
-                    p.paragraph_format.line_spacing = 1.0
                     if p.runs:
                         p.runs[0].font.bold = True
                         p.runs[0].font.size = Pt(8)
 
-        # 4. 接力提名區（小四至小六微型表格）
+        # 4. 接力提名區（小四至小六）
         if grade in [4, 5, 6]:
             p_rh = doc.add_paragraph()
             p_rh.paragraph_format.space_before = Pt(2)
@@ -418,8 +494,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
                 c.text = rt
                 p = c.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p.paragraph_format.space_before = Pt(0)
-                p.paragraph_format.space_after = Pt(0)
                 p.paragraph_format.line_spacing = 1.0
                 p.runs[0].font.bold = True
                 p.runs[0].font.size = Pt(7)
@@ -436,8 +510,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
                 c.text = str(val) if val else "（填寫）"
                 p = c.paragraphs[0]
                 p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                p.paragraph_format.space_before = Pt(0)
-                p.paragraph_format.space_after = Pt(0)
                 p.paragraph_format.line_spacing = 1.0
                 if p.runs:
                     p.runs[0].font.size = Pt(7)
@@ -458,9 +530,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
 
     doc.save(output_filename)
 
-# ---------------------------------------------------------------------
-# 2. 其它公文報表引擎 (秩序冊、執法紙、團體獎、道次表)
-# ---------------------------------------------------------------------
 def build_word_document(events_data, school_name, session_title, output_filename):
     doc = Document()
     for section in doc.sections:
@@ -1003,10 +1072,11 @@ def compile_single_class_entries(class_name):
     schedule_cache = {}
     for eid in grade_ev_ids:
         enm = MASTER_EVENTS[eid]
-        if (101 <= eid <= 124) or (225 <= eid <= 228):
+        meta = EVENT_META.get(eid, {})
+        if meta.get("type") == "track":
             sch = load_custom_schedule(eid)
             schedule_cache[eid] = sch if sch is not None else generate_auto_track_schedule(eid, enm)
-        elif 229 <= eid <= 260:
+        elif meta.get("type") == "field":
             sch = load_custom_schedule(eid)
             schedule_cache[eid] = sch if sch is not None else generate_auto_field_schedule(eid, enm)
             
@@ -1239,8 +1309,7 @@ def get_tournament_results():
                 if isinstance(data, dict) and "results" in data:
                     with open(RESULTS_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
                     return data
-        except Exception:
-            pass
+        except Exception: pass
 
     if os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, "r", encoding="utf-8") as f: return json.load(f)
@@ -1251,10 +1320,8 @@ def save_tournament_results(data):
     cfg = get_config()
     gas_url = cfg.get("gas_api_url", "").strip()
     if gas_url:
-        try:
-            requests.post(gas_url, json=data, timeout=4)
-        except Exception as e:
-            st.warning(f"⚠️ 雲端即時同步暫未成功（本地硬碟已保存安全）: {e}")
+        try: requests.post(gas_url, json=data, timeout=4)
+        except Exception as e: st.warning(f"⚠️ 雲端即時同步暫未成功（本地硬碟已保存安全）: {e}")
 
 def parse_track_time(raw_val):
     if raw_val is None: return None, ""
@@ -1301,9 +1368,10 @@ def generate_auto_track_schedule(eid, ename):
     g_num = get_grade_digit(ename)
     g = int(g_num)
     gender = "男" if "男子" in ename else ("女" if "女子" in ename else "混合")
-    clean_item = ename.replace("一年級", "").replace("二年級", "").replace("三年級", "")
-    clean_item = clean_item.replace("四年級", "").replace("五年級", "").replace("六年級", "")
-    clean_item = clean_item.replace("男子", "").replace("女子", "").replace("(決賽)", "")
+    
+    clean_item = ename
+    for pfx in ["一年級", "二年級", "三年級", "四年級", "五年級", "六年級", "男子", "女子", "(決賽)"]:
+        clean_item = clean_item.replace(pfx, "")
 
     df_reg = load_all_registrations()
     matches = df_reg[
@@ -1336,9 +1404,10 @@ def generate_auto_field_schedule(eid, ename):
     g_num = get_grade_digit(ename)
     g = int(g_num)
     gender = "男" if "男子" in ename else ("女" if "女子" in ename else "混合")
-    clean_item = ename.replace("一年級", "").replace("二年級", "").replace("三年級", "")
-    clean_item = clean_item.replace("四年級", "").replace("五年級", "").replace("六年級", "")
-    clean_item = clean_item.replace("男子", "").replace("女子", "")
+    
+    clean_item = ename
+    for pfx in ["一年級", "二年級", "三年級", "四年級", "五年級", "六年級", "男子", "女子"]:
+        clean_item = clean_item.replace(pfx, "")
 
     df_reg = load_all_registrations()
     matches = df_reg[
@@ -1384,8 +1453,11 @@ def auto_compile_events_from_database():
 
     for eid in sorted(MASTER_EVENTS.keys()):
         ename = MASTER_EVENTS[eid]
+        meta = EVENT_META.get(eid, {})
+        e_type = meta.get("type", "track")
+        e_stage = meta.get("stage", "final")
 
-        if 485 <= eid <= 487:
+        if e_type == "relay":
             sch = load_custom_schedule(eid)
             if sch is None: sch = generate_auto_relay_schedule(eid, ename)
             row0 = sch["班別"].tolist()
@@ -1393,13 +1465,13 @@ def auto_compile_events_from_database():
             matrix = [row0, row1, sch["第1棒"].tolist(), sch["第2棒"].tolist(), sch["第3棒"].tolist(), sch["第4棒"].tolist()]
             events_data.append({"id": str(eid), "name": ename, "type": "relay", "matrix": matrix})
 
-        elif 229 <= eid <= 260:
+        elif e_type == "field":
             sch = load_custom_schedule(eid)
             if sch is None: sch = generate_auto_field_schedule(eid, ename)
             athletes = [f"{r['班別']}{r['姓名']}" for _, r in sch.iterrows() if r["姓名"] != "（尚無報名）"]
             events_data.append({"id": str(eid), "name": ename, "type": "field", "athletes": athletes})
 
-        elif (101 <= eid <= 124) or (225 <= eid <= 228):
+        elif e_type == "track" and e_stage == "heat":
             sch = load_custom_schedule(eid)
             if sch is None: sch = generate_auto_track_schedule(eid, ename)
             header = ["組別", "線道1", "線道2", "線道3", "線道4", "線道5", "線道6", "線道7", "線道8"]
@@ -1412,14 +1484,26 @@ def auto_compile_events_from_database():
             events_data.append({"id": str(eid), "name": ename, "type": "track", "grid": grid})
 
         else:
-            header = ["組別", "線道1", "線道2", "線道3", "線道4", "線道5", "線道6", "線道7", "線道8"]
-            row = ["決賽", "", "", "", "", "", "", "", ""]
-            qual_list = t_data.get("qualifiers", {}).get(str(eid), [])
-            if qual_list:
-                for q in qual_list:
-                    ln = int(q.get("lane", 1))
-                    if 1 <= ln <= 8: row[ln] = f"{q['class']}{q['name']}"
-            events_data.append({"id": str(eid), "name": ename, "type": "track", "grid": [header, row]})
+            if meta.get("heat_source_id"):
+                header = ["組別", "線道1", "線道2", "線道3", "線道4", "線道5", "線道6", "線道7", "線道8"]
+                row = ["決賽", "", "", "", "", "", "", "", ""]
+                qual_list = t_data.get("qualifiers", {}).get(str(eid), [])
+                if qual_list:
+                    for q in qual_list:
+                        ln = int(q.get("lane", 1))
+                        if 1 <= ln <= 8: row[ln] = f"{q['class']}{q['name']}"
+                events_data.append({"id": str(eid), "name": ename, "type": "track", "grid": [header, row]})
+            else:
+                sch = load_custom_schedule(eid)
+                if sch is None: sch = generate_auto_track_schedule(eid, ename)
+                header = ["組別", "線道1", "線道2", "線道3", "線道4", "線道5", "線道6", "線道7", "線道8"]
+                grid = [header]
+                for grp_name, grp_df in sch.groupby("組別"):
+                    row = [grp_name]
+                    lane_dict = {int(r["線道"]): f"{r['班別']}{r['姓名']}" for _, r in grp_df.iterrows() if r["姓名"] != "（尚無報名）"}
+                    for ln in range(1, 9): row.append(lane_dict.get(ln, ""))
+                    grid.append(row)
+                events_data.append({"id": str(eid), "name": ename, "type": "track", "grid": grid})
 
     return events_data
 
@@ -1448,7 +1532,6 @@ def render_spectator_dashboard(cfg):
         "📅 全日賽程進度一覽"
     ])
 
-    # 1. 班際總分即時榜
     with tab_ranks:
         if df_stu is None:
             st.info("💡 賽事計分大榜即將上線，敬請期待！")
@@ -1496,17 +1579,9 @@ def render_spectator_dashboard(cfg):
             sen_lead = df_live[df_live["組別"] == "高級組 (P4-6)"].sort_values(by="組排名").iloc[0]
 
             with col_j:
-                st.metric(
-                    label="🟢 初級組團體錦標 (P1–3) 領先",
-                    value=f"{jun_lead['班別']} 班",
-                    delta=f"平均分: {jun_lead['平均分']:.3f}"
-                )
+                st.metric(label="🟢 初級組團體錦標 (P1–3) 領先", value=f"{jun_lead['班別']} 班", delta=f"平均分: {jun_lead['平均分']:.3f}")
             with col_s:
-                st.metric(
-                    label="🟣 高級組團體錦標 (P4–6) 領先",
-                    value=f"{sen_lead['班別']} 班",
-                    delta=f"平均分: {sen_lead['平均分']:.3f}"
-                )
+                st.metric(label="🟣 高級組團體錦標 (P4–6) 領先", value=f"{sen_lead['班別']} 班", delta=f"平均分: {sen_lead['平均分']:.3f}")
 
             st.write("---")
             st.markdown("##### 🏅 各年級級際排名榜")
@@ -1521,7 +1596,6 @@ def render_spectator_dashboard(cfg):
                             medal = ["🥇", "🥈", "🥉", "4.", "5."][idx] if idx < 5 else f"{idx+1}."
                             st.write(f"{medal} **{r['班別']}** — {r['平均分']:.3f} 分")
 
-    # 2. 按場次查詢 (道次/賽果)
     with tab_event_search:
         st.markdown("##### 🎯 查詢指定場次出賽名單、道次及完賽結果")
         event_select_options = [f"{eid} ｜ {MASTER_EVENTS[eid]}" for eid in sorted(MASTER_EVENTS.keys())]
@@ -1547,16 +1621,17 @@ def render_spectator_dashboard(cfg):
         else:
             st.caption(f"📋 【場次 {p_eid}】{p_ename} —— **選手出賽序與分組道次名冊如下**：")
 
-        if 485 <= p_eid <= 487:
+        meta = EVENT_META.get(p_eid, {})
+        if meta.get("type") == "relay":
             sch_relay = load_custom_schedule(p_eid)
             if sch_relay is None: sch_relay = generate_auto_relay_schedule(p_eid, p_ename)
             st.dataframe(sch_relay[["線道", "班別", "第1棒", "第2棒", "第3棒", "第4棒"]], hide_index=True, use_container_width=True)
-        elif 229 <= p_eid <= 260:
+        elif meta.get("type") == "field":
             sch_field = load_custom_schedule(p_eid)
             if sch_field is None: sch_field = generate_auto_field_schedule(p_eid, p_ename)
             valid_field = sch_field[sch_field["姓名"] != "（尚無報名）"]
             st.dataframe(valid_field[["出場次序", "班別", "學號", "姓名"]], hide_index=True, use_container_width=True)
-        elif (101 <= p_eid <= 124) or (225 <= eid <= 228 if 'eid' in locals() else (225 <= p_eid <= 228)):
+        elif meta.get("type") == "track" and meta.get("stage") == "heat":
             sch_track = load_custom_schedule(p_eid)
             if sch_track is None: sch_track = generate_auto_track_schedule(p_eid, p_ename)
             track_heats = sorted(sch_track["組別"].unique())
@@ -1567,19 +1642,23 @@ def render_spectator_dashboard(cfg):
                     valid_track = sub_h[sub_h["姓名"] != "（尚無報名）"]
                     st.dataframe(valid_track[["線道", "班別", "學號", "姓名"]], hide_index=True, use_container_width=True)
         else:
-            if ev_qualifiers:
-                df_q = pd.DataFrame(ev_qualifiers).sort_values(by="lane")
-                st.dataframe(
-                    df_q[["lane", "rank", "class", "name", "heat_time"]].rename(
+            if meta.get("heat_source_id"):
+                if ev_qualifiers:
+                    df_q = pd.DataFrame(ev_qualifiers).sort_values(by="lane")
+                    st.dataframe(df_q[["lane", "rank", "class", "name", "heat_time"]].rename(
                         columns={"lane": "決賽線道", "rank": "初賽排名", "class": "班別", "name": "姓名", "heat_time": "初賽秒數"}
-                    ),
-                    hide_index=True,
-                    use_container_width=True
-                )
+                    ), hide_index=True, use_container_width=True)
+                else:
+                    st.warning("⏳ 此場為徑賽決賽，初賽完賽後將即時自動排入決賽種子道次！")
             else:
-                st.warning("⏳ 此場為徑賽決賽，初賽完賽後將即時自動排入決賽種子道次！")
+                sch_track = load_custom_schedule(p_eid)
+                if sch_track is None: sch_track = generate_auto_track_schedule(p_eid, p_ename)
+                track_heats = sorted(sch_track["組別"].unique())
+                for h_nm in track_heats:
+                    sub_h = sch_track[sch_track["組別"] == h_nm].sort_values(by="線道")
+                    valid_track = sub_h[sub_h["姓名"] != "（尚無報名）"]
+                    st.dataframe(valid_track[["線道", "班別", "學號", "姓名"]], hide_index=True, use_container_width=True)
 
-    # 3. 最新決賽賽果
     with tab_results:
         results_list = t_data.get("results", [])
         if not results_list:
@@ -1593,14 +1672,11 @@ def render_spectator_dashboard(cfg):
                 ev_res.sort(key=lambda x: x.get("rank", 99))
 
                 with st.expander(f"🏁 【場次 {eid}】{ename}（點擊查看前 8 名）", expanded=(eid == rev_events[0])):
-                    r_df = pd.DataFrame(ev_res)[["rank", "class", "points"]].rename(
-                        columns={"rank": "名次", "class": "班別", "points": "得分"}
-                    )
+                    r_df = pd.DataFrame(ev_res)[["rank", "class", "points"]].rename(columns={"rank": "名次", "class": "班別", "points": "得分"})
                     medals = {1: "🥇 冠軍", 2: "🥈 亞軍", 3: "🥉 季軍", 4: "殿軍 (第4名)", 5: "第 5 名", 6: "第 6 名", 7: "第 7 名", 8: "第 8 名"}
                     r_df["榮銜"] = r_df["名次"].map(medals).fillna("-")
                     st.dataframe(r_df[["名次", "榮銜", "班別", "得分"]], hide_index=True, use_container_width=True)
 
-    # 4. 按學生查詢道次
     with tab_stu_search:
         st.markdown("##### 🔎 輸入學生姓名或學號，秒查孩子參賽項目與道次")
         if df_stu is None:
@@ -1625,20 +1701,15 @@ def render_spectator_dashboard(cfg):
 
             df_query = pd.DataFrame(all_found)
             if search_name.strip() and not df_query.empty:
-                df_query = df_query[
-                    df_query["姓名"].str.contains(search_name.strip(), na=False) |
-                    df_query["學號"].str.contains(search_name.strip(), na=False)
-                ]
+                df_query = df_query[df_query["姓名"].str.contains(search_name.strip(), na=False) | df_query["學號"].str.contains(search_name.strip(), na=False)]
 
-            if df_query.empty:
-                st.info("查無符合條件的參賽記錄。")
+            if df_query.empty: st.info("查無符合條件的參賽記錄。")
             else:
                 st.caption(f"共找到 {len(df_query)} 筆參賽記錄：")
                 st.dataframe(df_query, hide_index=True, use_container_width=True)
 
-    # 5. 全日賽程進度一覽
     with tab_schedule:
-        st.markdown("##### 📋 大會全日 87 場次賽程進度")
+        st.markdown("##### 📋 大會全日賽程進度總覽")
         finished_ids = {r["event_id"] for r in t_data.get("results", [])}
         qual_ids = {int(k) for k in t_data.get("qualifiers", {}).keys()}
 
@@ -1646,9 +1717,9 @@ def render_spectator_dashboard(cfg):
         for eid, ename in sorted(MASTER_EVENTS.items()):
             if eid in finished_ids: status = "✅ 已完賽 (已計分)"
             elif eid in qual_ids: status = "🔥 決賽名單已產生 (待賽)"
-            elif 101 <= eid <= 124: status = "🏃 徑賽初賽"
-            elif 229 <= eid <= 260: status = "🎯 田賽決賽"
-            elif 485 <= eid <= 487: status = "🎽 班際接力決賽"
+            elif EVENT_META.get(eid, {}).get("stage") == "heat": status = "🏃 徑賽初賽"
+            elif EVENT_META.get(eid, {}).get("type") == "field": status = "🎯 田賽決賽"
+            elif EVENT_META.get(eid, {}).get("type") == "relay": status = "🎽 班際接力決賽"
             else: status = "⏳ 等待初賽結果"
             sch_rows.append({"場次": eid, "項目名稱": ename, "目前進度": status})
 
@@ -1688,7 +1759,7 @@ else:
         "功能模組導航",
         [
             "👀 現場公眾看板 (家長/學生唯讀)",
-            "1. 體育科主任：各班各項目配額設定",
+            "1. 體育科主任：比賽項目管理與配額設定",
             "2. 班主任：學生選拔報名登記",
             "3. 自動排線與主任線上微調",
             "4. 一鍵匯出 Word 秩序冊",
@@ -1701,18 +1772,19 @@ else:
         render_spectator_dashboard(cfg)
 
     # ----------------------------------------------------
-    # 模組 1：配額設定 ＋ 依格式匯出報名表 (單頁A4)
+    # 模組 1：比賽項目管理 (新增/修改/刪除) ＋ 配額設定
     # ----------------------------------------------------
-    elif menu == "1. 體育科主任：各班各項目配額設定":
-        st.title("⚙️ 體育科主任：各班各項目參賽人數比例設定")
+    elif menu == "1. 體育科主任：比賽項目管理與配額設定":
+        st.title("⚙️ 體育科主任：比賽項目自訂維護與各班配額")
+
         has_students = "df_students" in st.session_state
-        with st.expander("📂 學生名冊管理（上傳一次永久儲存，若需更換名冊請在此操作）", expanded=not has_students):
+        with st.expander("📂 學生名冊管理（上傳一次永久儲存）", expanded=not has_students):
             uploaded_file = st.file_uploader("上傳全校學生名冊 Excel/CSV (含欄位：班別、學號、姓名、性別)", type=["xlsx", "csv"])
             if uploaded_file:
                 new_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith(".xlsx") else pd.read_csv(uploaded_file)
                 save_students_to_disk(new_df)
                 st.session_state["df_students"] = new_df
-                st.success(f"🎉 學生名冊已永久儲存至本機硬碟，共 {len(new_df)} 人！日後免再上傳。")
+                st.success(f"🎉 學生名冊已永久儲存，共 {len(new_df)} 人！日後免再上傳。")
                 st.rerun()
 
             if has_students:
@@ -1724,92 +1796,232 @@ else:
                         del st.session_state["df_students"]
                         st.rerun()
 
-        if "df_students" in st.session_state:
+        target_grade = st.radio("選擇操作年級", [1, 2, 3, 4, 5, 6], horizontal=True, format_func=lambda x: f"{x}年級")
+
+        m1_tab_titles = ["📋 比賽項目維護 (新增/修改/刪除)", "👦 男子組名額設定", "👧 女子組名額設定"]
+        if target_grade in [4, 5, 6]: m1_tab_titles.append("🎽 班際 4×100米 接力選項設定")
+        m1_tabs = st.tabs(m1_tab_titles)
+
+        # ---------------------------------------------------------
+        # 分頁 0：比賽項目自訂維護 (新增 / 修改 / 刪除 / 自動生成編號)
+        # ---------------------------------------------------------
+        with m1_tabs[0]:
+            st.subheader(f"📋 {target_grade} 年級比賽項目管理中樞")
+            events_list = load_events_config()
+            curr_grade_events = [ev for ev in events_list if int(ev["grade"]) == target_grade]
+
+            sub_tabs = st.tabs(["➕ 新增比賽項目", "✏️ 修改現有項目", "🗑️ 刪除項目與系統重置"])
+
+            # 1. 新增項目
+            with sub_tabs[0]:
+                st.markdown("##### ➕ 新增項目（類別 ➔ 性別 ➔ 賽制 ➔ 自動生成場次編號）")
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    add_name = st.text_input("項目名稱", placeholder="例如：50米跑、擲豆袋、立定跳高", key=f"add_nm_{target_grade}")
+                with c2:
+                    add_cat = st.selectbox("項目類別", ["徑賽", "田賽", "接力賽"], key=f"add_cat_{target_grade}")
+                with c3:
+                    if add_cat == "接力賽":
+                        add_gender = st.selectbox("性別組別", ["混合", "男", "女"], key=f"add_gen_{target_grade}")
+                    else:
+                        add_gender = st.selectbox("性別組別", ["男", "女"], key=f"add_gen_{target_grade}")
+                with c4:
+                    if add_cat == "徑賽":
+                        add_fmt = st.selectbox("賽制安排", ["初賽->決賽", "直接決賽"], key=f"add_fmt_{target_grade}")
+                    else:
+                        st.caption("ℹ️ 田賽／接力賽固定為「直接決賽」")
+                        add_fmt = "直接決賽"
+
+                # 即時動態試算分配編號
+                auto_h, auto_f = allocate_event_ids(add_cat, add_fmt, events_list)
+                if add_fmt == "初賽->決賽":
+                    st.success(f"🔢 **系統將自動指派場次編號**：【初賽：場次 {auto_h}】 ➔ 【決賽：場次 {auto_f}】")
+                else:
+                    st.success(f"🔢 **系統將自動指派場次編號**：【決賽：場次 {auto_f}】")
+
+                if st.button("🚀 確認新增比賽項目", type="primary", key=f"btn_add_{target_grade}"):
+                    if not add_name.strip():
+                        st.error("❌ 請輸入項目名稱！")
+                    else:
+                        c_name = add_name.strip()
+                        # 檢查是否同性別同名重複
+                        dup = any(ev for ev in curr_grade_events if ev["name"] == c_name and ev["gender"] == add_gender)
+                        if dup:
+                            st.error(f"❌ {target_grade} 年級已存在【{add_gender}子組 {c_name}】項目！")
+                        else:
+                            new_entry = {
+                                "id": f"ev_{target_grade}_{auto_f}",
+                                "grade": target_grade,
+                                "name": c_name,
+                                "category": add_cat,
+                                "gender": add_gender,
+                                "format": add_fmt,
+                                "heat_id": auto_h,
+                                "final_id": auto_f
+                            }
+                            events_list.append(new_entry)
+                            save_events_config(events_list)
+                            st.success(f"🎉 成功新增：{target_grade}年級 {add_gender}子組「{c_name}」！")
+                            st.rerun()
+
+            # 2. 修改項目
+            with sub_tabs[1]:
+                st.markdown("##### ✏️ 修改現有比賽項目")
+                if not curr_grade_events:
+                    st.info("目前尚無項目。")
+                else:
+                    edit_opts = {ev["id"]: f"【場次 {ev.get('heat_id', '')}/{ev.get('final_id', '')}】{ev['gender']}子 {ev['name']} ({ev['category']} ｜ {ev['format']})" for ev in curr_grade_events}
+                    sel_edit_id = st.selectbox("請選擇欲修改的項目", list(edit_opts.keys()), format_func=lambda k: edit_opts[k], key=f"sel_ed_{target_grade}")
+                    ev_target = next(ev for ev in curr_grade_events if ev["id"] == sel_edit_id)
+
+                    ce1, ce2, ce3, ce4 = st.columns(4)
+                    with ce1:
+                        ed_nm = st.text_input("項目名稱", value=ev_target["name"], key=f"ed_nm_{sel_edit_id}")
+                    with ce2:
+                        ed_cat = st.selectbox("項目類別", ["徑賽", "田賽", "接力賽"], index=["徑賽", "田賽", "接力賽"].index(ev_target["category"]), key=f"ed_cat_{sel_edit_id}")
+                    with ce3:
+                        g_opts = ["混合", "男", "女"] if ed_cat == "接力賽" else ["男", "女"]
+                        g_idx = g_opts.index(ev_target["gender"]) if ev_target["gender"] in g_opts else 0
+                        ed_gen = st.selectbox("性別組別", g_opts, index=g_idx, key=f"ed_gen_{sel_edit_id}")
+                    with ce4:
+                        if ed_cat == "徑賽":
+                            f_opts = ["初賽->決賽", "直接決賽"]
+                            f_idx = f_opts.index(ev_target["format"]) if ev_target["format"] in f_opts else 0
+                            ed_fmt = st.selectbox("賽制安排", f_opts, index=f_idx, key=f"ed_fmt_{sel_edit_id}")
+                        else:
+                            st.caption("ℹ️ 固定為「直接決賽」")
+                            ed_fmt = "直接決賽"
+
+                    keep_id = st.checkbox("保留現有場次編號 (若更改了賽制類別，建議取消勾選以自動重配編號)", value=True, key=f"keep_id_{sel_edit_id}")
+
+                    if st.button("💾 儲存修改內容", type="primary", key=f"btn_save_ed_{sel_edit_id}"):
+                        if not ed_nm.strip():
+                            st.error("項目名稱不得為空！")
+                        else:
+                            if keep_id and ed_fmt == ev_target["format"] and ed_cat == ev_target["category"]:
+                                new_h, new_f = ev_target.get("heat_id"), ev_target.get("final_id")
+                            else:
+                                new_h, new_f = allocate_event_ids(ed_cat, ed_fmt, events_list, exclude_ev_id=sel_edit_id)
+
+                            for ev in events_list:
+                                if ev["id"] == sel_edit_id:
+                                    ev["name"] = ed_nm.strip()
+                                    ev["category"] = ed_cat
+                                    ev["gender"] = ed_gen
+                                    ev["format"] = ed_fmt
+                                    ev["heat_id"] = new_h
+                                    ev["final_id"] = new_f
+                                    break
+                            save_events_config(events_list)
+                            st.success(f"🎉 項目【{ed_nm}】修改已成功儲存！")
+                            st.rerun()
+
+            # 3. 刪除與重置
+            with sub_tabs[2]:
+                st.markdown("##### 🗑️ 刪除項目與系統預設重置")
+                if curr_grade_events:
+                    del_opts = {ev["id"]: f"【場次 {ev.get('heat_id', '')}/{ev.get('final_id', '')}】{ev['gender']}子 {ev['name']}" for ev in curr_grade_events}
+                    sel_del_id = st.selectbox("選擇要刪除的項目", list(del_opts.keys()), format_func=lambda k: del_opts[k], key=f"sel_del_{target_grade}")
+                    if st.button(f"🗑️ 永久刪除所選項目", key=f"btn_del_{target_grade}"):
+                        events_list = [ev for ev in events_list if ev["id"] != sel_del_id]
+                        save_events_config(events_list)
+                        st.warning("項目已成功刪除！")
+                        st.rerun()
+
+                st.write("---")
+                if st.button("🔄 一鍵還原全校預設 87 場次標準項目", key=f"btn_reset_{target_grade}"):
+                    save_events_config(DEFAULT_EVENTS)
+                    st.success("🎉 已完全復原為學校預設 87 場次項目架構！")
+                    st.rerun()
+
+        # ---------------------------------------------------------
+        # 分頁 1 & 2：各班項目配額微調
+        # ---------------------------------------------------------
+        ev_list = get_ordered_grade_events(target_grade)
+        quotas = get_quota_matrix()
+
+        if has_students:
             df_stu = st.session_state["df_students"]
             class_stats = df_stu.groupby(["班別", "性別"]).size().unstack(fill_value=0)
             for col in ["男", "女"]:
                 if col not in class_stats.columns: class_stats[col] = 0
-
-            target_grade = st.radio("選擇設定年級", [1, 2, 3, 4, 5, 6], horizontal=True, format_func=lambda x: f"{x}年級")
-            ev_list = get_ordered_grade_events(target_grade)
             classes = sorted([c for c in df_stu["班別"].unique() if str(c).startswith(str(target_grade))])
-            quotas = get_quota_matrix()
-            
-            tab_titles = ["👦 男子組項目配額", "👧 女子組項目配額"]
-            if target_grade in [4, 5, 6]: tab_titles.append("🎽 班際 4×100米 接力選項設定")
-            tabs = st.tabs(tab_titles)
-            
-            with tabs[0]:
-                b_rows = []
-                for c in classes:
-                    r = {"班別": c, "男生人數": int(class_stats.loc[c, "男"]) if c in class_stats.index else 0}
-                    for ev in ev_list: r[ev] = quotas.get(f"{c}_男_{ev}", 2)
-                    b_rows.append(r)
-                b_df = pd.DataFrame(b_rows)
-                ed_boys = st.data_editor(b_df, disabled=["班別", "男生人數"], hide_index=True, key=f"b_{target_grade}", use_container_width=True)
+        else:
+            classes = [f"{target_grade}A", f"{target_grade}B", f"{target_grade}C", f"{target_grade}D", f"{target_grade}E"]
+            class_stats = pd.DataFrame(index=classes, columns=["男", "女"]).fillna(0)
 
-            with tabs[1]:
-                g_rows = []
-                for c in classes:
-                    r = {"班別": c, "女生人數": int(class_stats.loc[c, "女"]) if c in class_stats.index else 0}
-                    for ev in ev_list: r[ev] = quotas.get(f"{c}_女_{ev}", 2)
-                    g_rows.append(r)
-                g_df = pd.DataFrame(g_rows)
-                ed_girls = st.data_editor(g_df, disabled=["班別", "女生人數"], hide_index=True, key=f"g_{target_grade}", use_container_width=True)
+        with m1_tabs[1]:
+            b_rows = []
+            for c in classes:
+                r = {"班別": c, "男生人數": int(class_stats.loc[c, "男"]) if c in class_stats.index else 0}
+                for ev in ev_list: r[ev] = quotas.get(f"{c}_男_{ev}", 2)
+                b_rows.append(r)
+            b_df = pd.DataFrame(b_rows)
+            ed_boys = st.data_editor(b_df, disabled=["班別", "男生人數"], hide_index=True, key=f"b_{target_grade}", use_container_width=True)
 
-            if target_grade in [4, 5, 6]:
-                with tabs[2]:
-                    st.subheader(f"🎽 {target_grade} 年級班際 4×100米 混合接力規則設定")
-                    c_r1, c_r2 = st.columns(2)
-                    with c_r1: r_b_min = st.number_input(f"{target_grade}年級 正選男生最低人數", min_value=0, max_value=3, value=quotas.get(f"relay_g{target_grade}_min_b", 1), key=f"rg_b_{target_grade}")
-                    with c_r2: r_g_min = st.number_input(f"{target_grade}年級 正選女生最低人數", min_value=0, max_value=3, value=quotas.get(f"relay_g{target_grade}_min_g", 1), key=f"rg_g_{target_grade}")
+        with m1_tabs[2]:
+            g_rows = []
+            for c in classes:
+                r = {"班別": c, "女生人數": int(class_stats.loc[c, "女"]) if c in class_stats.index else 0}
+                for ev in ev_list: r[ev] = quotas.get(f"{c}_女_{ev}", 2)
+                g_rows.append(r)
+            g_df = pd.DataFrame(g_rows)
+            ed_girls = st.data_editor(g_df, disabled=["班別", "女生人數"], hide_index=True, key=f"g_{target_grade}", use_container_width=True)
 
-                    relay_class_status = [{"班別": c, "開放接力報名": quotas.get(f"relay_enabled_{c}", True), "正選人數": 4, "後備名額 (男女各1)": 2} for c in classes]
-                    df_rc = pd.DataFrame(relay_class_status)
-                    ed_relay_class = st.data_editor(df_rc, disabled=["班別", "正選人數", "後備名額 (男女各1)"], hide_index=True, key=f"rc_ed_{target_grade}", use_container_width=True)
+        if target_grade in [4, 5, 6]:
+            with m1_tabs[3]:
+                st.subheader(f"🎽 {target_grade} 年級班際 4×100米 混合接力規則設定")
+                c_r1, c_r2 = st.columns(2)
+                with c_r1: r_b_min = st.number_input(f"{target_grade}年級 正選男生最低人數", min_value=0, max_value=3, value=quotas.get(f"relay_g{target_grade}_min_b", 1), key=f"rg_b_{target_grade}")
+                with c_r2: r_g_min = st.number_input(f"{target_grade}年級 正選女生最低人數", min_value=0, max_value=3, value=quotas.get(f"relay_g{target_grade}_min_g", 1), key=f"rg_g_{target_grade}")
 
-            st.divider()
-            c_save_quota, c_export_grade = st.columns([2, 3])
+                relay_class_status = [{"班別": c, "開放接力報名": quotas.get(f"relay_enabled_{c}", True), "正選人數": 4, "後備名額 (男女各1)": 2} for c in classes]
+                df_rc = pd.DataFrame(relay_class_status)
+                ed_relay_class = st.data_editor(df_rc, disabled=["班別", "正選人數", "後備名額 (男女各1)"], hide_index=True, key=f"rc_ed_{target_grade}", use_container_width=True)
 
-            with c_save_quota:
-                if st.button(f"💾 儲存 {target_grade} 年級全部配額設定", type="primary", use_container_width=True):
-                    for _, r in ed_boys.iterrows():
-                        for ev in ev_list: quotas[f"{r['班別']}_男_{ev}"] = int(r[ev])
-                    for _, r in ed_girls.iterrows():
-                        for ev in ev_list: quotas[f"{r['班別']}_女_{ev}"] = int(r[ev])
-                    
-                    if target_grade in [4, 5, 6]:
-                        quotas[f"relay_g{target_grade}_min_b"] = int(r_b_min)
-                        quotas[f"relay_g{target_grade}_min_g"] = int(r_g_min)
-                        for _, r in ed_relay_class.iterrows(): quotas[f"relay_enabled_{r['班別']}"] = bool(r["開放接力報名"])
+        st.divider()
+        c_save_quota, c_export_grade = st.columns([2, 3])
 
-                    save_quota_matrix(quotas)
-                    st.success(f"🎉 {target_grade} 年級個人賽配額及接力規則已成功儲存！")
+        with c_save_quota:
+            if st.button(f"💾 儲存 {target_grade} 年級全部配額設定", type="primary", use_container_width=True):
+                for _, r in ed_boys.iterrows():
+                    for ev in ev_list: quotas[f"{r['班別']}_男_{ev}"] = int(r[ev])
+                for _, r in ed_girls.iterrows():
+                    for ev in ev_list: quotas[f"{r['班別']}_女_{ev}"] = int(r[ev])
+                
+                if target_grade in [4, 5, 6]:
+                    quotas[f"relay_g{target_grade}_min_b"] = int(r_b_min)
+                    quotas[f"relay_g{target_grade}_min_g"] = int(r_g_min)
+                    for _, r in ed_relay_class.iterrows(): quotas[f"relay_enabled_{r['班別']}"] = bool(r["開放接力報名"])
 
-            with c_export_grade:
-                grade_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_{target_grade}年級各班選拔報名表(標準格式).docx"
-                if st.button(f"📄 匯出【{target_grade} 年級】紙本選拔報名表 (.docx - 男女灰底單頁A4)", type="secondary", use_container_width=True):
-                    with st.spinner(f"正在生成 {target_grade} 年級各班標準報名表..."):
-                        build_class_blank_registration_doc(classes, cfg["school_name"], cfg["session_title"], grade_doc_name)
-                        with open(grade_doc_name, "rb") as fp:
-                            st.session_state[f"grade_reg_bytes_{target_grade}"] = fp.read()
-                        st.success(f"🎉 {target_grade} 年級標準報名表生成完成！請點擊下方下載：")
+                save_quota_matrix(quotas)
+                st.success(f"🎉 {target_grade} 年級個人賽配額及接力規則已成功儲存！")
 
-            if f"grade_reg_bytes_{target_grade}" in st.session_state:
-                st.download_button(
-                    label=f"📥 下載【{target_grade} 年級】選拔報名表 (含名額與灰底隔離) (.docx)",
-                    data=st.session_state[f"grade_reg_bytes_{target_grade}"],
-                    file_name=grade_doc_name,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True
-                )
+        with c_export_grade:
+            grade_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_{target_grade}年級各班選拔報名表(標準格式).docx"
+            if st.button(f"📄 匯出【{target_grade} 年級】紙本選拔報名表 (.docx - 男女灰底單頁A4)", type="secondary", use_container_width=True):
+                with st.spinner(f"正在生成 {target_grade} 年級各班標準報名表..."):
+                    build_class_blank_registration_doc(classes, cfg["school_name"], cfg["session_title"], grade_doc_name)
+                    with open(grade_doc_name, "rb") as fp:
+                        st.session_state[f"grade_reg_bytes_{target_grade}"] = fp.read()
+                    st.success(f"🎉 {target_grade} 年級標準報名表生成完成！請點擊下方下載：")
 
-            st.write("---")
-            st.subheader("🏫 全校 24 班選拔報名表套裝（體育科主任分發專用）")
-            st.info("💡 **一鍵整疊列印**：依標準格式生成全校 24 班報名表，嚴格壓縮至每班單頁 A4，男生女生互斥灰底，清楚列明各項名額，印出後可整疊直接派發至班主任信箱！")
+        if f"grade_reg_bytes_{target_grade}" in st.session_state:
+            st.download_button(
+                label=f"📥 下載【{target_grade} 年級】選拔報名表 (含名額與灰底隔離) (.docx)",
+                data=st.session_state[f"grade_reg_bytes_{target_grade}"],
+                file_name=grade_doc_name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                use_container_width=True
+            )
 
-            all_blank_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_全校24班選拔報名表套裝(標準男女灰底版).docx"
-            if st.button("🖨️ 一鍵生成全校 24 班報名表套裝 (.docx - 每班獨立一頁)", type="primary"):
+        st.write("---")
+        st.subheader("🏫 全校 24 班選拔報名表套裝（體育科主任分發專用）")
+        all_blank_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_全校24班選拔報名表套裝(標準男女灰底版).docx"
+        if st.button("🖨️ 一鍵生成全校 24 班報名表套裝 (.docx - 每班獨立一頁)", type="primary"):
+            if not has_students:
+                st.warning("⚠️ 請先在上方上傳學生名冊！")
+            else:
                 with st.spinner("正在為全校 24 班載入學生名冊與核定配額..."):
                     all_cl = sorted(df_stu["班別"].unique())
                     build_class_blank_registration_doc(all_cl, cfg["school_name"], cfg["session_title"], all_blank_doc_name)
@@ -1817,14 +2029,13 @@ else:
                         st.session_state["all_blank_reg_bytes"] = fp.read()
                     st.success("🎉 全校 24 班報名表套裝已排版完成！請點擊下方按鈕下載：")
 
-            if "all_blank_reg_bytes" in st.session_state:
-                st.download_button(
-                    label="📥 下載全校 24 班標準選拔報名表套裝 (.docx)",
-                    data=st.session_state["all_blank_reg_bytes"],
-                    file_name=all_blank_doc_name,
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    use_container_width=True
-                )
+        if "all_blank_reg_bytes" in st.session_state:
+            st.download_button(
+                label="📥 下載全校 24 班標準選拔報名表套裝 (.docx)",
+                data=st.session_state["all_blank_reg_bytes"],
+                file_name=all_blank_doc_name,
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
 
     # ----------------------------------------------------
     # 模組 2：班主任登記
@@ -2017,6 +2228,7 @@ else:
         
         sel_eid = int(selected_event_str.split(" ｜ ")[0])
         sel_ename = selected_event_str.split(" ｜ ")[1]
+        meta = EVENT_META.get(sel_eid, {})
 
         c_m3_title, c_m3_print = st.columns([3, 1])
         with c_m3_title: st.write(f"### 🎯 【場次 {sel_eid}】{sel_ename}")
@@ -2034,7 +2246,7 @@ else:
                             mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                         )
 
-        if sel_eid in [485, 486, 487]:
+        if meta.get("type") == "relay":
             st.info("💡 規則：A班-3線、B班-4線、C班-5線、D班-6線、E班-7線。棒次自動同步各班提交之名單。")
             custom_df = load_custom_schedule(sel_eid)
             if custom_df is None or st.button("🔄 重新從各班報名同步最新接力棒次"):
@@ -2045,7 +2257,7 @@ else:
                 save_custom_schedule(sel_eid, edited_relay)
                 st.success(f"🎉 【場次 {sel_eid}】接力名單已正式定稿儲存！")
 
-        elif 229 <= sel_eid <= 260:
+        elif meta.get("type") == "field":
             st.info("💡 規則：全級選手依「班別＋學號」遞增嚴格排序為出場次序 1 至 N。")
             custom_df = load_custom_schedule(sel_eid)
             if custom_df is None or st.button("🔄 重新從各班報名名冊一鍵自動排序"):
@@ -2066,7 +2278,7 @@ else:
                 save_custom_schedule(sel_eid, edited_field.sort_values(by="出場次序").reset_index(drop=True))
                 st.success(f"🎉 【場次 {sel_eid}】田賽次序已定稿儲存！")
 
-        elif (101 <= sel_eid <= 124) or (225 <= sel_eid <= 228):
+        elif meta.get("type") == "track" and (meta.get("stage") == "heat" or not meta.get("heat_source_id")):
             st.info("💡 規則：A班-1線、B班-2線、C班-3線、D班-4線、E班-5線。同班學號小者入第 1 組，大者入第 2 組。主任可微調各組線道。")
             custom_df = load_custom_schedule(sel_eid)
             if custom_df is None or st.button("🔄 重新從各班報名名冊一鍵自動排線"):
@@ -2129,12 +2341,11 @@ else:
         st.title("📄 匯出全校比賽程序秩序冊、裁判執法表與班別名冊")
         st.write(f"當前大會抬頭：**{cfg['school_name']}** ｜ **{cfg['session_title']}**")
 
-        st.subheader("📘 大會程序秩序冊（全校 87 場次完整編排）")
-        st.info("💡 **全自動模式**：系統彙整全校各班名冊，自動完成 87 場次分組排線，生成完整 Word 秩序冊。")
+        st.subheader("📘 大會程序秩序冊（全校完整賽程編排）")
         out_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_陸運會程序.docx"
 
         if st.button("🚀 一鍵自動排線並生成 Word 秩序冊", type="primary"):
-            with st.spinner("正在自動排線並編排 87 場次 Word 秩序冊中，請稍候..."):
+            with st.spinner("正在自動排線並編排 Word 秩序冊中，請稍候..."):
                 auto_events = auto_compile_events_from_database()
                 build_word_document(auto_events, cfg["school_name"], cfg["session_title"], out_doc_name)
                 with open(out_doc_name, "rb") as fp: st.session_state["generated_docx_bytes"] = fp.read()
@@ -2149,25 +2360,22 @@ else:
             )
 
         st.write("---")
-        st.subheader("📋 裁判執法夾板記錄表（賽前批次匯出：100 / 200 / 400 項目）")
-        st.info(
-            "💡 **賽前夾板列印專用**：依賽會規程，此處**僅匯出已確定選手之 100系列（初賽）、200系列（田賽／200米）及 400系列（接力）**。\n"
-            "🚨 **300系列（徑賽決賽）**因需視現場初賽晉級結果排定種子道次，**請於『模組 5：現場成績錄入』內即時生成與列印！**"
-        )
+        st.subheader("📋 裁判執法夾板記錄表（賽前批次匯出：非晉級決賽項目）")
+        st.info("💡 **賽前夾板列印專用**：匯出已確定出賽名單之初賽、田賽與接力項目。徑賽決賽請於現場初賽完賽後在『模組 5』即時印出。")
 
-        all_sheets_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_裁判執法記錄表(100_200_400項目).docx"
+        all_sheets_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_賽前裁判執法記錄表套裝.docx"
 
-        if st.button("🖨️ 一鍵生成賽前裁判記錄表 (100, 200, 400 項目獨立分頁)", type="primary"):
-            with st.spinner("正在篩選並排版 100、200、400 項目裁判記錄表..."):
+        if st.button("🖨️ 一鍵生成賽前裁判記錄表套裝 (.docx)", type="primary"):
+            with st.spinner("正在篩選並排版賽前裁判記錄表..."):
                 all_events = auto_compile_events_from_database()
-                filtered_events = [ev for ev in all_events if int(ev["id"]) // 100 in [1, 2, 4]]
+                filtered_events = [ev for ev in all_events if not (EVENT_META.get(int(ev["id"]), {}).get("stage") == "final" and EVENT_META.get(int(ev["id"]), {}).get("heat_source_id"))]
                 build_score_sheets_doc(filtered_events, cfg["school_name"], cfg["session_title"], all_sheets_doc_name)
                 with open(all_sheets_doc_name, "rb") as fp: st.session_state["generated_all_sheets_docx"] = fp.read()
-                st.success("🎉 100、200、400 項目裁判記錄表已成功生成！請點擊下方按鈕下載：")
+                st.success("🎉 賽前裁判記錄表已成功生成！請點擊下方按鈕下載：")
 
         if "generated_all_sheets_docx" in st.session_state:
             st.download_button(
-                label="📥 下載裁判執法記錄表套裝 (100, 200, 400 項目) (.docx)",
+                label="📥 下載賽前裁判執法記錄表套裝 (.docx)",
                 data=st.session_state["generated_all_sheets_docx"],
                 file_name=all_sheets_doc_name,
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -2175,8 +2383,6 @@ else:
 
         st.write("---")
         st.subheader("🏫 各班參賽通知名冊（全校 24 班打包套裝）")
-        st.info("💡 **體育科主任分發專用**：將全校 24 班的參賽名冊、組別、線道與出場排序編排為一個 Word 檔，每班自動獨立分頁（Page Break），直接印出即可分發至各班主任信箱！")
-
         all_class_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_全校各班參賽道次名冊套裝.docx"
 
         if st.button("🖨️ 一鍵生成全校 24 班參賽名單套裝 (.docx - 每班獨立一頁)", type="primary"):
@@ -2215,20 +2421,21 @@ else:
         ])
 
         with tab_track:
-            track_ids = [eid for eid in sorted(MASTER_EVENTS.keys()) if (101 <= eid <= 124) or (225 <= eid <= 228) or (361 <= eid <= 384) or (485 <= eid <= 487)]
+            track_ids = [eid for eid in sorted(MASTER_EVENTS.keys()) if EVENT_META.get(eid, {}).get("type") in ["track", "relay"]]
             chosen_track = st.selectbox("🎯 選擇徑賽場次", [f"{eid} ｜ {MASTER_EVENTS[eid]}" for eid in track_ids], key="track_sel")
             t_eid = int(chosen_track.split(" ｜ ")[0])
             t_ename = chosen_track.split(" ｜ ")[1]
             t_g_num = get_grade_digit(t_ename)
+            meta = EVENT_META.get(t_eid, {})
 
-            is_heat = (101 <= t_eid <= 124)
-            final_target_eid = t_eid + 260 if is_heat else None
+            is_heat = (meta.get("stage") == "heat")
+            final_target_eid = meta.get("final_target_id")
 
             if is_heat:
                 st.subheader(f"🏃 【場次 {t_eid} 初賽】{t_ename} 成績錄入（依組別排列）")
                 st.info(
-                    f"💡 **初賽規則**：**不予評分**！請在各組別標籤中鍵入各組選手秒數（例: `1654` $\rightarrow$ `16.54秒`）。\n"
-                    f"全部組別輸入完畢後，點擊下方「跨組別綜合排名」按鈕，系統將自動按時間全場總排行，並將前 8 名依種子線道 (3,4,5,6,7,2,1,8) 推入【場次 {final_target_eid} 決賽】。"
+                    f"💡 **初賽規則**：**不予評分**！請在各組別標籤中鍵入選手秒數（例: `1654` $\rightarrow$ `16.54秒`）。\n"
+                    f"點擊「跨組別綜合排名」後，系統按時間總排行，前 8 名依種子線道 (3,4,5,6,7,2,1,8) 推入【場次 {final_target_eid} 決賽】。"
                 )
 
                 sch_track = load_custom_schedule(t_eid)
@@ -2242,7 +2449,6 @@ else:
 
                 for h_idx, h_name in enumerate(heats):
                     with heat_input_tabs[h_idx]:
-                        st.caption(f"🏁 此為【{h_name}】出賽選手名冊，請輸入終點時間：")
                         sub_heat_df = sch_track[sch_track["組別"] == h_name][["組別", "線道", "班別", "學號", "姓名"]].copy()
                         sub_heat_df["成績快打"] = ""
 
@@ -2321,9 +2527,10 @@ else:
                             "heat_time": str(row["大會成績"])
                         })
 
-                    t_data["qualifiers"][str(final_target_eid)] = top8_qualifiers
-                    save_tournament_results(t_data)
-                    st.success(f"🎉 初賽前 8 名選手已自動完成跨組別排序，並依種子線道 (3,4,5,6,7,2,1,8) 鎖定推入【場次 {final_target_eid} 決賽】！")
+                    if final_target_eid:
+                        t_data["qualifiers"][str(final_target_eid)] = top8_qualifiers
+                        save_tournament_results(t_data)
+                        st.success(f"🎉 初賽前 8 名已自動完成跨組別排序，並依種子線道 (3,4,5,6,7,2,1,8) 鎖定推入【場次 {final_target_eid} 決賽】！")
 
             else:
                 c_f_head, c_f_print = st.columns([3, 1.2])
@@ -2417,7 +2624,7 @@ else:
         with tab_field:
             st.subheader("🎯 田賽決賽成績錄入 (每人2次試投/跳機會)")
             st.info("📋 **規則指引**：田賽直接為決賽，每人 2 次試跳／試擲機會。系統取最佳成績判定名次，前 8 名給予 9 至 1 分。")
-            field_ids = [eid for eid in sorted(MASTER_EVENTS.keys()) if 229 <= eid <= 260]
+            field_ids = [eid for eid in sorted(MASTER_EVENTS.keys()) if EVENT_META.get(eid, {}).get("type") == "field"]
             chosen_field = st.selectbox("🎯 選擇田賽場次", [f"{eid} ｜ {MASTER_EVENTS[eid]}" for eid in field_ids], key="field_sel")
             f_eid = int(chosen_field.split(" ｜ ")[0])
             f_ename = chosen_field.split(" ｜ ")[1]
@@ -2683,13 +2890,14 @@ else:
 
         st.write("---")
         st.subheader("📦 【方案二】手動全量數據包 (匯出備份 ＋ 上傳還原)")
-        st.info("💡 **離線抗災與跨設備同步專用**：可將目前全校所有名冊、配額矩陣、排線道次與比賽積分打包為一個檔案備份到本地；亦可在新設備上傳覆蓋還原。")
+        st.info("💡 **離線抗災與跨設備同步專用**：可將目前全校所有名冊、自訂項目清單、配額矩陣、排線道次與比賽積分打包為一個檔案備份到本地；亦可在新設備上傳覆蓋還原。")
 
         col_sync_dl, col_sync_ul = st.columns(2)
 
         with col_sync_dl:
             all_backup_data = {
                 "config": get_config(),
+                "custom_events": load_events_config(),
                 "quota_matrix": get_quota_matrix(),
                 "tournament_results": get_tournament_results(),
                 "registrations": load_all_registrations().to_dict(orient="records")
@@ -2711,6 +2919,7 @@ else:
                     try:
                         loaded_data = json.load(uploaded_backup)
                         if "config" in loaded_data: save_config(loaded_data["config"])
+                        if "custom_events" in loaded_data: save_events_config(loaded_data["custom_events"])
                         if "quota_matrix" in loaded_data: save_quota_matrix(loaded_data["quota_matrix"])
                         if "tournament_results" in loaded_data: save_tournament_results(loaded_data["tournament_results"])
                         st.success("🎉 備份資料已成功載入並覆蓋此設備！")
