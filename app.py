@@ -1,5 +1,5 @@
 # app.py
-# 基督教聖約教會堅樂小學 - 陸運會行政自動化、成績計算、唯讀看板與項目動態自訂系統 (旗艦完整版 - 78場次修訂版)
+# 基督教聖約教會堅樂小學 - 陸運會行政自動化、成績計算、唯讀看板與全雲端同步系統 (旗艦完整版)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -14,6 +14,8 @@ from docx.oxml import parse_xml, OxmlElement
 from docx.oxml.ns import nsdecls, qn
 
 st.set_page_config(page_title="堅樂小學陸運會平台", layout="wide")
+
+DEFAULT_GAS_API_URL = "https://script.google.com/macros/s/AKfycbwC5pWHuI4cw9_hDIMu2f1hhiXQ0sudZwYE210zYP_08bSq5ySWyLffcjUiM5Phd0JvLw/exec"
 
 CONFIG_PATH = "quota_config.json"
 QUOTA_MATRIX_PATH = "quota_matrix.json"
@@ -39,7 +41,7 @@ FINAL_SEED_LANES = [3, 4, 5, 6, 7, 2, 1, 8]
 POINT_SYSTEM = {1: 9, 2: 7, 3: 6, 4: 5, 5: 4, 6: 3, 7: 2, 8: 1}
 
 # =====================================================================
-# 項目動態自訂資料庫與自動配號核心 (已取消跳繩及200M，低年級加入4x25M接力)
+# 項目動態自訂資料庫與自動配號核心 (78場次修訂版)
 # =====================================================================
 DEFAULT_EVENTS = [
     # 一年級 (4項個人 + 4x25M接力)
@@ -109,6 +111,205 @@ DEFAULT_EVENTS = [
     {"id": "ev_487", "grade": 6, "name": "4×100米接力跑", "category": "接力賽", "gender": "混合", "format": "直接決賽", "heat_id": None, "final_id": 487},
 ]
 
+# =====================================================================
+# 全量雲端雙向同步引擎 (確保配額、名冊、報名、排線與成績永不因重啟遺失)
+# =====================================================================
+def get_config():
+    cfg = {
+        "school_name": "基督教聖約教會堅樂小學",
+        "session_title": "第二十四屆",
+        "relay_min_boys": 1,
+        "relay_min_girls": 1,
+        "gas_api_url": DEFAULT_GAS_API_URL
+    }
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                cfg.update(loaded)
+        except Exception:
+            pass
+    if not str(cfg.get("gas_api_url", "")).strip():
+        cfg["gas_api_url"] = DEFAULT_GAS_API_URL
+    return cfg
+
+def save_config(cfg):
+    if not str(cfg.get("gas_api_url", "")).strip():
+        cfg["gas_api_url"] = DEFAULT_GAS_API_URL
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+def _read_local_json(path, default_val):
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f: return json.load(f)
+        except Exception: pass
+    return default_val
+
+def push_full_state_to_cloud(show_error=True):
+    cfg = get_config()
+    gas_url = cfg.get("gas_api_url", "").strip()
+    if not gas_url:
+        return False
+
+    t_res = _read_local_json(RESULTS_FILE, {"results": [], "absences": [], "qualifiers": {}})
+    quotas = _read_local_json(QUOTA_MATRIX_PATH, {})
+    ev_raw = _read_local_json(EVENTS_CONFIG_PATH, {"version": EVENTS_SCHEMA_VERSION, "events": list(DEFAULT_EVENTS)})
+
+    regs_map = {}
+    relays_map = {}
+    if os.path.exists(REG_DATA_DIR):
+        for fn in os.listdir(REG_DATA_DIR):
+            fp = os.path.join(REG_DATA_DIR, fn)
+            if fn.startswith("reg_") and fn.endswith(".json"):
+                c_nm = fn[4:-5]
+                regs_map[c_nm] = _read_local_json(fp, [])
+            elif fn.startswith("relay_") and fn.endswith(".json"):
+                c_nm = fn[6:-5]
+                relays_map[c_nm] = _read_local_json(fp, {})
+
+    sch_map = {}
+    if os.path.exists(SCHEDULES_DIR):
+        for fn in os.listdir(SCHEDULES_DIR):
+            if fn.startswith("sch_") and fn.endswith(".json"):
+                eid_str = fn[4:-5]
+                sch_map[eid_str] = _read_local_json(os.path.join(SCHEDULES_DIR, fn), [])
+
+    students_records = []
+    if "df_students" in st.session_state and st.session_state["df_students"] is not None:
+        students_records = st.session_state["df_students"].fillna("").to_dict(orient="records")
+    elif os.path.exists(STUDENTS_FILE):
+        try:
+            students_records = pd.read_excel(STUDENTS_FILE).fillna("").to_dict(orient="records")
+        except Exception:
+            pass
+
+    full_payload = {
+        "app_config": {
+            "school_name": cfg.get("school_name", "基督教聖約教會堅樂小學"),
+            "session_title": cfg.get("session_title", "第二十四屆"),
+            "relay_min_boys": cfg.get("relay_min_boys", 1),
+            "relay_min_girls": cfg.get("relay_min_girls", 1)
+        },
+        "results": t_res.get("results", []),
+        "absences": t_res.get("absences", []),
+        "qualifiers": t_res.get("qualifiers", {}),
+        "quota_matrix": quotas,
+        "custom_events_payload": ev_raw,
+        "registrations_map": regs_map,
+        "relays_map": relays_map,
+        "schedules_map": sch_map,
+        "students_records": students_records
+    }
+
+    try:
+        resp = requests.post(gas_url, json=full_payload, timeout=15)
+        if resp.status_code == 200:
+            body = resp.text.strip()
+            if body.startswith("{") or body.startswith("["):
+                try:
+                    parsed = json.loads(body)
+                    if isinstance(parsed, dict) and parsed.get("status") == "error":
+                        if show_error:
+                            st.error(f"⚠️ Google Apps Script 寫入錯誤：{parsed.get('message', '未知錯誤')}")
+                        return False
+                except Exception:
+                    pass
+                return True
+            if show_error:
+                st.error("⚠️ Google Apps Script 未回傳 JSON（請檢查 GAS 部署權限是否設為「所有人」，或腳本是否執行錯誤）。")
+            return False
+        if show_error:
+            st.warning(f"⚠️ 雲端同步回應狀態異常 ({resp.status_code})，資料已先存於本機。")
+    except Exception as e:
+        if show_error:
+            st.warning(f"⚠️ 雲端即時同步暫未成功（本機已保存）: {e}")
+    return False
+
+def pull_full_state_from_cloud(force=False):
+    cfg = get_config()
+    gas_url = cfg.get("gas_api_url", "").strip()
+    if not gas_url:
+        return False
+    if not force and st.session_state.get("cloud_boot_pulled", False):
+        return True
+
+    try:
+        res = requests.get(gas_url, timeout=12)
+        if res.status_code == 200:
+            body = res.text.strip()
+            if not (body.startswith("{") or body.startswith("[")):
+                st.session_state["cloud_boot_pulled"] = True
+                return False
+
+            data = json.loads(body)
+            if isinstance(data, dict) and data.get("status") != "error":
+                # 0. 基本抬頭設定
+                app_cfg = data.get("app_config")
+                if isinstance(app_cfg, dict):
+                    merged_cfg = get_config()
+                    for k in ["school_name", "session_title", "relay_min_boys", "relay_min_girls"]:
+                        if k in app_cfg:
+                            merged_cfg[k] = app_cfg[k]
+                    save_config(merged_cfg)
+
+                # 1. 比賽成績與晉級名單
+                if "results" in data:
+                    t_obj = {
+                        "results": data.get("results", []),
+                        "absences": data.get("absences", []),
+                        "qualifiers": data.get("qualifiers", {})
+                    }
+                    with open(RESULTS_FILE, "w", encoding="utf-8") as f:
+                        json.dump(t_obj, f, ensure_ascii=False, indent=2)
+
+                # 2. 各班項目配額 (防止重啟後變回2人)
+                if isinstance(data.get("quota_matrix"), dict) and data["quota_matrix"]:
+                    with open(QUOTA_MATRIX_PATH, "w", encoding="utf-8") as f:
+                        json.dump(data["quota_matrix"], f, ensure_ascii=False, indent=2)
+
+                # 3. 自訂項目列表
+                ev_p = data.get("custom_events_payload")
+                if isinstance(ev_p, dict) and ev_p.get("version") == EVENTS_SCHEMA_VERSION:
+                    with open(EVENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
+                        json.dump(ev_p, f, ensure_ascii=False, indent=2)
+
+                # 4. 學生名冊
+                stu_recs = data.get("students_records")
+                if isinstance(stu_recs, list) and len(stu_recs) > 0:
+                    df_cloud_stu = pd.DataFrame(stu_recs)
+                    df_cloud_stu.to_excel(STUDENTS_FILE, index=False)
+                    st.session_state["df_students"] = df_cloud_stu
+
+                # 5. 各班個人報名
+                regs_m = data.get("registrations_map")
+                if isinstance(regs_m, dict):
+                    for c_nm, recs in regs_m.items():
+                        with open(os.path.join(REG_DATA_DIR, f"reg_{c_nm}.json"), "w", encoding="utf-8") as f:
+                            json.dump(recs, f, ensure_ascii=False, indent=2)
+
+                # 6. 各班接力報名
+                relays_m = data.get("relays_map")
+                if isinstance(relays_m, dict):
+                    for c_nm, r_dict in relays_m.items():
+                        with open(os.path.join(REG_DATA_DIR, f"relay_{c_nm}.json"), "w", encoding="utf-8") as f:
+                            json.dump(r_dict, f, ensure_ascii=False, indent=2)
+
+                # 7. 排線與出場次序
+                sch_m = data.get("schedules_map")
+                if isinstance(sch_m, dict):
+                    for eid_str, s_recs in sch_m.items():
+                        with open(os.path.join(SCHEDULES_DIR, f"sch_{eid_str}.json"), "w", encoding="utf-8") as f:
+                            json.dump(s_recs, f, ensure_ascii=False, indent=2)
+
+                st.session_state["cloud_boot_pulled"] = True
+                return True
+    except Exception:
+        pass
+    st.session_state["cloud_boot_pulled"] = True
+    return False
+
 def load_events_config():
     if os.path.exists(EVENTS_CONFIG_PATH):
         try:
@@ -118,7 +319,9 @@ def load_events_config():
                 return data.get("events", list(DEFAULT_EVENTS))
         except Exception:
             pass
-    save_events_config(list(DEFAULT_EVENTS))
+    payload = {"version": EVENTS_SCHEMA_VERSION, "events": list(DEFAULT_EVENTS)}
+    with open(EVENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
     return list(DEFAULT_EVENTS)
 
 def save_events_config(events_list):
@@ -128,6 +331,7 @@ def save_events_config(events_list):
     }
     with open(EVENTS_CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+    return push_full_state_to_cloud()
 
 def allocate_event_ids(category, format_choice, current_events, exclude_ev_id=None):
     used_ids = set()
@@ -208,6 +412,8 @@ def build_runtime_registry():
 
     return grade_events_map, master_events_dict, event_meta_dict
 
+# 啟動時先從 Google Drive 同步還原所有狀態
+pull_full_state_from_cloud(force=False)
 GRADE_EVENTS_MAP, MASTER_EVENTS, EVENT_META = build_runtime_registry()
 
 def get_ordered_grade_events(grade):
@@ -291,7 +497,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         saved_reg = load_class_reg(c_name)
         reg_map = {str(r["學號"]): r["項目"] for r in saved_reg}
 
-        # 1. 抬頭
         p_t = doc.add_paragraph()
         p_t.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p_t.paragraph_format.space_before = Pt(0)
@@ -303,7 +508,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         r1.font.size = Pt(13.5)
         r1.font.color.rgb = RGBColor(0, 51, 102)
 
-        # 2. 名額限制摘要盒
         p_qbox = doc.add_paragraph()
         p_qbox.paragraph_format.space_before = Pt(0)
         p_qbox.paragraph_format.space_after = Pt(2)
@@ -322,7 +526,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         r_bg.font.size = Pt(7.5)
         r_bg.bold = True
 
-        # 3. 核心報名表格 (動態按項目數量調整欄寬)
         col_count = 3 + n_ev * 2
         total_rows = len(c_students) + 2
         table = doc.add_table(rows=total_rows, cols=col_count)
@@ -338,7 +541,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
             for j, w in enumerate(col_widths):
                 if j < len(row.cells): row.cells[j].width = Inches(w)
 
-        # 學號
         c_sid = table.cell(0, 0)
         c_sid.merge(table.cell(1, 0))
         c_sid.text = "學號"
@@ -350,7 +552,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         c_sid.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_sid, top=12, bottom=12, left=5, right=5)
 
-        # 中文姓名
         c_name_cell = table.cell(0, 1)
         c_name_cell.merge(table.cell(1, 1))
         c_name_cell.text = "中文姓名"
@@ -362,7 +563,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         c_name_cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_name_cell, top=12, bottom=12, left=5, right=5)
 
-        # 性別
         c_gen = table.cell(0, 2)
         c_gen.merge(table.cell(1, 2))
         c_gen.text = "性別"
@@ -374,7 +574,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         c_gen.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_gen, top=12, bottom=12, left=5, right=5)
 
-        # 男子組大標
         c_b_head = table.cell(0, 3).merge(table.cell(0, 3 + n_ev - 1))
         c_b_head.text = "男   子   組"
         p = c_b_head.paragraphs[0]
@@ -385,7 +584,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         c_b_head.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_b_head, top=12, bottom=12, left=5, right=5)
 
-        # 女子組大標
         c_g_head = table.cell(0, 3 + n_ev).merge(table.cell(0, col_count - 1))
         c_g_head.text = "女   子   組"
         p = c_g_head.paragraphs[0]
@@ -396,7 +594,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
         c_g_head.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_padding(c_g_head, top=12, bottom=12, left=5, right=5)
 
-        # 項目子表頭與限額
         for k, ev in enumerate(ev_list):
             s_ev = get_short_event_name(ev)
             b_quota = quotas.get(f"{c_name}_男_{ev}", 2)
@@ -422,7 +619,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
             c_gk.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
             set_cell_padding(c_gk, top=10, bottom=10, left=3, right=3)
 
-        # 填入學生資料（男女互斥灰底）
         for i, (_, s) in enumerate(c_students.iterrows()):
             r_idx = i + 2
             sid = str(s["學號"])
@@ -480,7 +676,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
                         p.runs[0].font.bold = True
                         p.runs[0].font.size = Pt(8)
 
-        # 4. 接力提名區（全校小一至小六皆適用：P1-P3 為 4×25米接力跑，P4-P6 為 4×100米接力跑）
         p_rh = doc.add_paragraph()
         p_rh.paragraph_format.space_before = Pt(2)
         p_rh.paragraph_format.space_after = Pt(1)
@@ -525,7 +720,6 @@ def build_class_blank_registration_doc(classes_to_export, school_name, session_t
                 if not val: p.runs[0].font.color.rgb = RGBColor(150, 150, 150)
             set_cell_padding(c, top=10, bottom=10, left=5, right=5)
 
-        # 5. 簽署欄
         p_sign = doc.add_paragraph()
         p_sign.paragraph_format.space_before = Pt(4)
         p_sign.paragraph_format.space_after = Pt(0)
@@ -1189,7 +1383,6 @@ def build_class_entry_doc(classes_to_export, school_name, session_title, output_
                     if j == 3: set_cell_background(cell, "EBF5FB")
                 else: set_cell_background(cell, "FAFAFA")
 
-        # 全校 P1-P6 班際接力表
         doc.add_paragraph().paragraph_format.space_after = Pt(4)
         p_h2 = doc.add_paragraph()
         p_h2.paragraph_format.space_before = Pt(4)
@@ -1242,16 +1435,8 @@ def build_class_entry_doc(classes_to_export, school_name, session_title, output_
     doc.save(output_filename)
 
 # =====================================================================
-# 系統輔助、雲端同步 (GAS API) 與本地檔案處理
+# 本地讀寫與雲端自動雙向同步封裝
 # =====================================================================
-def get_config():
-    if os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f: return json.load(f)
-    return {"school_name": "基督教聖約教會堅樂小學", "session_title": "第二十四屆", "relay_min_boys": 1, "relay_min_girls": 1, "gas_api_url": ""}
-
-def save_config(cfg):
-    with open(CONFIG_PATH, "w", encoding="utf-8") as f: json.dump(cfg, f, ensure_ascii=False, indent=2)
-
 def get_quota_matrix():
     if os.path.exists(QUOTA_MATRIX_PATH):
         with open(QUOTA_MATRIX_PATH, "r", encoding="utf-8") as f: return json.load(f)
@@ -1259,6 +1444,7 @@ def get_quota_matrix():
 
 def save_quota_matrix(data):
     with open(QUOTA_MATRIX_PATH, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
+    return push_full_state_to_cloud()
 
 def load_saved_students():
     if os.path.exists(STUDENTS_FILE):
@@ -1266,11 +1452,15 @@ def load_saved_students():
         except Exception: return None
     return None
 
-def save_students_to_disk(df): df.to_excel(STUDENTS_FILE, index=False)
+def save_students_to_disk(df):
+    df.to_excel(STUDENTS_FILE, index=False)
+    st.session_state["df_students"] = df
+    return push_full_state_to_cloud()
 
 def save_class_reg(class_name, records):
     path = os.path.join(REG_DATA_DIR, f"reg_{class_name}.json")
     with open(path, "w", encoding="utf-8") as f: json.dump(records, f, ensure_ascii=False, indent=2)
+    return push_full_state_to_cloud()
 
 def load_class_reg(class_name):
     path = os.path.join(REG_DATA_DIR, f"reg_{class_name}.json")
@@ -1281,6 +1471,7 @@ def load_class_reg(class_name):
 def save_class_relay(class_name, relay_dict):
     path = os.path.join(REG_DATA_DIR, f"relay_{class_name}.json")
     with open(path, "w", encoding="utf-8") as f: json.dump(relay_dict, f, ensure_ascii=False, indent=2)
+    return push_full_state_to_cloud()
 
 def load_class_relay(class_name):
     path = os.path.join(REG_DATA_DIR, f"relay_{class_name}.json")
@@ -1301,6 +1492,7 @@ def load_all_registrations():
 def save_custom_schedule(eid, df):
     path = os.path.join(SCHEDULES_DIR, f"sch_{eid}.json")
     df.to_json(path, orient="records", force_ascii=False, indent=2)
+    return push_full_state_to_cloud()
 
 def load_custom_schedule(eid):
     path = os.path.join(SCHEDULES_DIR, f"sch_{eid}.json")
@@ -1310,29 +1502,13 @@ def load_custom_schedule(eid):
     return None
 
 def get_tournament_results():
-    cfg = get_config()
-    gas_url = cfg.get("gas_api_url", "").strip()
-    if gas_url:
-        try:
-            res = requests.get(gas_url, timeout=4)
-            if res.status_code == 200:
-                data = res.json()
-                if isinstance(data, dict) and "results" in data:
-                    with open(RESULTS_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
-                    return data
-        except Exception: pass
-
     if os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, "r", encoding="utf-8") as f: return json.load(f)
     return {"results": [], "absences": [], "qualifiers": {}}
 
 def save_tournament_results(data):
     with open(RESULTS_FILE, "w", encoding="utf-8") as f: json.dump(data, f, ensure_ascii=False, indent=2)
-    cfg = get_config()
-    gas_url = cfg.get("gas_api_url", "").strip()
-    if gas_url:
-        try: requests.post(gas_url, json=data, timeout=4)
-        except Exception as e: st.warning(f"⚠️ 雲端即時同步暫未成功（本地硬碟已保存安全）: {e}")
+    return push_full_state_to_cloud()
 
 def parse_track_time(raw_val):
     if raw_val is None: return None, ""
@@ -1758,8 +1934,18 @@ else:
     st.sidebar.caption(f"{cfg['school_name']}\n{cfg['session_title']}")
 
     gas_active = bool(cfg.get("gas_api_url", "").strip())
-    if gas_active: st.sidebar.success("🟢 Google 雲端自動同步中")
-    else: st.sidebar.info("💾 本地硬碟模式運行中")
+    if gas_active:
+        st.sidebar.success("🟢 Google 雲端全量自動同步中")
+        if st.sidebar.button("🔄 立即從雲端重新載入最新資料", use_container_width=True):
+            with st.spinner("正在從 Google Drive 同步最新資料..."):
+                if pull_full_state_from_cloud(force=True):
+                    st.session_state["q_ver"] = st.session_state.get("q_ver", 0) + 1
+                    st.toast("✅ 已從雲端同步最新設定與名冊！")
+                    st.rerun()
+                else:
+                    st.sidebar.error("⚠️ 雲端同步失敗，請檢查 GAS 部署權限與網址")
+    else:
+        st.sidebar.warning("🟠 未設定雲端網址（重啟會清空資料）")
 
     if "df_students" in st.session_state:
         stu_count = len(st.session_state["df_students"])
@@ -1789,14 +1975,19 @@ else:
     elif menu == "1. 體育科主任：比賽項目管理與配額設定":
         st.title("⚙️ 體育科主任：比賽項目自訂維護與各班配額")
 
+        if "quota_saved_banner" in st.session_state:
+            st.success(st.session_state.pop("quota_saved_banner"))
+
         has_students = "df_students" in st.session_state
-        with st.expander("📂 學生名冊管理（上傳一次永久儲存）", expanded=not has_students):
+        with st.expander("📂 學生名冊管理（上傳一次永久儲存並同步雲端）", expanded=not has_students):
             uploaded_file = st.file_uploader("上傳全校學生名冊 Excel/CSV (含欄位：班別、學號、姓名、性別)", type=["xlsx", "csv"])
             if uploaded_file:
                 new_df = pd.read_excel(uploaded_file) if uploaded_file.name.endswith(".xlsx") else pd.read_csv(uploaded_file)
-                save_students_to_disk(new_df)
-                st.session_state["df_students"] = new_df
-                st.success(f"🎉 學生名冊已永久儲存，共 {len(new_df)} 人！日後免再上傳。")
+                synced = save_students_to_disk(new_df)
+                if synced:
+                    st.session_state["quota_saved_banner"] = f"🎉 學生名冊已永久儲存並同步至 Google Drive，共 {len(new_df)} 人！"
+                else:
+                    st.session_state["quota_saved_banner"] = f"✅ 學生名冊已儲存於本機（共 {len(new_df)} 人），但雲端同步未成功，請檢查 GAS 設定。"
                 st.rerun()
 
             if has_students:
@@ -1806,6 +1997,7 @@ else:
                     if st.button("🗑️ 清除現存名單"):
                         if os.path.exists(STUDENTS_FILE): os.remove(STUDENTS_FILE)
                         del st.session_state["df_students"]
+                        push_full_state_to_cloud()
                         st.rerun()
 
         target_grade = st.radio("選擇操作年級", [1, 2, 3, 4, 5, 6], horizontal=True, format_func=lambda x: f"{x}年級")
@@ -1819,15 +2011,12 @@ else:
         ]
         m1_tabs = st.tabs(m1_tab_titles)
 
-        # ---------------------------------------------------------
-        # 分頁 0：比賽項目自訂維護 (新增 / 修改 / 刪除 / 自動生成編號)
-        # ---------------------------------------------------------
+        # 分頁 0：比賽項目自訂維護
         with m1_tabs[0]:
             st.subheader(f"📋 {target_grade} 年級比賽項目管理中樞")
             events_list = load_events_config()
             curr_grade_events = [ev for ev in events_list if int(ev["grade"]) == target_grade]
 
-            # 顯示本年級現有項目一覽表
             if curr_grade_events:
                 overview_rows = []
                 for ev in curr_grade_events:
@@ -1843,7 +2032,6 @@ else:
 
             sub_tabs = st.tabs(["➕ 新增比賽項目", "✏️ 修改現有項目", "🗑️ 刪除項目與系統重置"])
 
-            # 1. 新增項目
             with sub_tabs[0]:
                 st.markdown("##### ➕ 新增項目（類別 ➔ 性別 ➔ 賽制 ➔ 自動生成場次編號）")
                 c1, c2, c3, c4 = st.columns(4)
@@ -1890,10 +2078,9 @@ else:
                             }
                             events_list.append(new_entry)
                             save_events_config(events_list)
-                            st.success(f"🎉 成功新增：{target_grade}年級 {add_gender}子組「{c_name}」！")
+                            st.session_state["quota_saved_banner"] = f"🎉 成功新增：{target_grade}年級 {add_gender}子組「{c_name}」並已同步雲端！"
                             st.rerun()
 
-            # 2. 修改項目
             with sub_tabs[1]:
                 st.markdown("##### ✏️ 修改現有比賽項目")
                 if not curr_grade_events:
@@ -1942,10 +2129,9 @@ else:
                                     ev["final_id"] = new_f
                                     break
                             save_events_config(events_list)
-                            st.success(f"🎉 項目【{ed_nm}】修改已成功儲存！")
+                            st.session_state["quota_saved_banner"] = f"🎉 項目【{ed_nm}】修改已成功儲存並同步雲端！"
                             st.rerun()
 
-            # 3. 刪除與重置
             with sub_tabs[2]:
                 st.markdown("##### 🗑️ 刪除項目與系統預設重置")
                 if curr_grade_events:
@@ -1954,20 +2140,19 @@ else:
                     if st.button(f"🗑️ 永久刪除所選項目", key=f"btn_del_{target_grade}"):
                         events_list = [ev for ev in events_list if ev["id"] != sel_del_id]
                         save_events_config(events_list)
-                        st.warning("項目已成功刪除！")
+                        st.session_state["quota_saved_banner"] = "🗑️ 項目已成功刪除並同步雲端！"
                         st.rerun()
 
                 st.write("---")
                 if st.button("🔄 一鍵還原全校預設 78 場次標準項目 (無跳繩/200M，含低年級4x25M接力)", key=f"btn_reset_{target_grade}"):
                     save_events_config(list(DEFAULT_EVENTS))
-                    st.success("🎉 已完全復原為最新修訂之 78 場次項目架構！")
+                    st.session_state["quota_saved_banner"] = "🎉 已完全復原為最新修訂之 78 場次項目架構！"
                     st.rerun()
 
-        # ---------------------------------------------------------
-        # 分頁 1 & 2 & 3：各班項目配額與接力規則微調 (全校 P1-P6 皆有接力)
-        # ---------------------------------------------------------
+        # 分頁 1, 2, 3：各班項目配額與接力規則微調
         ev_list = get_ordered_grade_events(target_grade)
         quotas = get_quota_matrix()
+        q_ver = st.session_state.get("q_ver", 0)
 
         if has_students:
             df_stu = st.session_state["df_students"]
@@ -1983,29 +2168,31 @@ else:
             b_rows = []
             for c in classes:
                 r = {"班別": c, "男生人數": int(class_stats.loc[c, "男"]) if c in class_stats.index else 0}
-                for ev in ev_list: r[ev] = quotas.get(f"{c}_男_{ev}", 2)
+                for ev in ev_list: r[ev] = int(quotas.get(f"{c}_男_{ev}", 2))
                 b_rows.append(r)
             b_df = pd.DataFrame(b_rows)
-            ed_boys = st.data_editor(b_df, disabled=["班別", "男生人數"], hide_index=True, key=f"b_{target_grade}", use_container_width=True)
+            col_cfg_b = {ev: st.column_config.NumberColumn(ev, min_value=0, max_value=20, step=1) for ev in ev_list}
+            ed_boys = st.data_editor(b_df, disabled=["班別", "男生人數"], column_config=col_cfg_b, hide_index=True, key=f"b_{target_grade}_{q_ver}", use_container_width=True)
 
         with m1_tabs[2]:
             g_rows = []
             for c in classes:
                 r = {"班別": c, "女生人數": int(class_stats.loc[c, "女"]) if c in class_stats.index else 0}
-                for ev in ev_list: r[ev] = quotas.get(f"{c}_女_{ev}", 2)
+                for ev in ev_list: r[ev] = int(quotas.get(f"{c}_女_{ev}", 2))
                 g_rows.append(r)
             g_df = pd.DataFrame(g_rows)
-            ed_girls = st.data_editor(g_df, disabled=["班別", "女生人數"], hide_index=True, key=f"g_{target_grade}", use_container_width=True)
+            col_cfg_g = {ev: st.column_config.NumberColumn(ev, min_value=0, max_value=20, step=1) for ev in ev_list}
+            ed_girls = st.data_editor(g_df, disabled=["班別", "女生人數"], column_config=col_cfg_g, hide_index=True, key=f"g_{target_grade}_{q_ver}", use_container_width=True)
 
         with m1_tabs[3]:
             st.subheader(f"🎽 {target_grade} 年級班際 {relay_title_name} 規則設定")
             c_r1, c_r2 = st.columns(2)
-            with c_r1: r_b_min = st.number_input(f"{target_grade}年級 正選男生最低人數", min_value=0, max_value=3, value=quotas.get(f"relay_g{target_grade}_min_b", 1), key=f"rg_b_{target_grade}")
-            with c_r2: r_g_min = st.number_input(f"{target_grade}年級 正選女生最低人數", min_value=0, max_value=3, value=quotas.get(f"relay_g{target_grade}_min_g", 1), key=f"rg_g_{target_grade}")
+            with c_r1: r_b_min = st.number_input(f"{target_grade}年級 正選男生最低人數", min_value=0, max_value=3, value=int(quotas.get(f"relay_g{target_grade}_min_b", 1)), key=f"rg_b_{target_grade}_{q_ver}")
+            with c_r2: r_g_min = st.number_input(f"{target_grade}年級 正選女生最低人數", min_value=0, max_value=3, value=int(quotas.get(f"relay_g{target_grade}_min_g", 1)), key=f"rg_g_{target_grade}_{q_ver}")
 
-            relay_class_status = [{"班別": c, "開放接力報名": quotas.get(f"relay_enabled_{c}", True), "正選人數": 4, "後備名額 (男女各1)": 2} for c in classes]
+            relay_class_status = [{"班別": c, "開放接力報名": bool(quotas.get(f"relay_enabled_{c}", True)), "正選人數": 4, "後備名額 (男女各1)": 2} for c in classes]
             df_rc = pd.DataFrame(relay_class_status)
-            ed_relay_class = st.data_editor(df_rc, disabled=["班別", "正選人數", "後備名額 (男女各1)"], hide_index=True, key=f"rc_ed_{target_grade}", use_container_width=True)
+            ed_relay_class = st.data_editor(df_rc, disabled=["班別", "正選人數", "後備名額 (男女各1)"], hide_index=True, key=f"rc_ed_{target_grade}_{q_ver}", use_container_width=True)
 
         st.divider()
         c_save_quota, c_export_grade = st.columns([2, 3])
@@ -2021,8 +2208,13 @@ else:
                 quotas[f"relay_g{target_grade}_min_g"] = int(r_g_min)
                 for _, r in ed_relay_class.iterrows(): quotas[f"relay_enabled_{r['班別']}"] = bool(r["開放接力報名"])
 
-                save_quota_matrix(quotas)
-                st.success(f"🎉 {target_grade} 年級個人賽配額及 {relay_title_name} 規則已成功儲存！")
+                synced = save_quota_matrix(quotas)
+                st.session_state["q_ver"] = q_ver + 1
+                if synced:
+                    st.session_state["quota_saved_banner"] = f"🎉 {target_grade} 年級個人賽配額及 {relay_title_name} 規則已成功儲存，並已永久同步至 Google Drive！"
+                else:
+                    st.session_state["quota_saved_banner"] = f"✅ {target_grade} 年級配額已儲存於本機（雲端同步失敗，請確認 GAS 權限已設為「所有人」並已建立新版本部署）。"
+                st.rerun()
 
         with c_export_grade:
             grade_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_{target_grade}年級各班選拔報名表(標準格式).docx"
@@ -2065,7 +2257,7 @@ else:
             )
 
     # ----------------------------------------------------
-    # 模組 2：班主任登記 (全校 P1-P6 皆開放班際接力報名)
+    # 模組 2：班主任登記
     # ----------------------------------------------------
     elif menu == "2. 班主任：學生選拔報名登記":
         st.title("👨‍🏫 班主任：學生選拔報名登記")
@@ -2124,7 +2316,7 @@ else:
                         cols = st.columns(len(events))
                         for idx, ev in enumerate(events):
                             c_used = live_counts[g_name][ev]
-                            c_max = quotas.get(f"{c_pick}_{g_name}_{ev}", 2)
+                            c_max = int(quotas.get(f"{c_pick}_{g_name}_{ev}", 2))
                             c_remain = c_max - c_used
                             with cols[idx]:
                                 if c_used >= c_max: st.warning(f"**{ev}**\n\n**{c_used} / {c_max}** (滿額 🔒)")
@@ -2139,7 +2331,7 @@ else:
 
                     available_events = []
                     for ev in events:
-                        max_limit = quotas.get(f"{c_pick}_{g}_{ev}", 2)
+                        max_limit = int(quotas.get(f"{c_pick}_{g}_{ev}", 2))
                         others_taken = live_counts[g][ev] - (1 if cur_chosen == ev else 0)
                         if others_taken < max_limit: available_events.append(ev)
 
@@ -2156,7 +2348,7 @@ else:
                         st.write("")
                         if chosen_ev != "-- 不參賽 --":
                             u = live_counts[g][chosen_ev]
-                            m = quotas.get(f"{c_pick}_{g}_{chosen_ev}", 2)
+                            m = int(quotas.get(f"{c_pick}_{g}_{chosen_ev}", 2))
                             if u == m: st.caption(f"🔒 【{g}子{chosen_ev}】滿額 ({u}/{m})")
                             else: st.caption(f"✅ 【{g}子{chosen_ev}】有效 ({u}/{m}，剩 {m-u} 席)")
                             records_to_save.append({"班別": c_pick, "學號": sid, "姓名": name, "性別": g, "項目": chosen_ev})
@@ -2167,8 +2359,11 @@ else:
                 c_save_reg, c_print_class = st.columns(2)
                 with c_save_reg:
                     if st.button(f"💾 儲存 {c_pick} 個人賽報名名單", type="primary", use_container_width=True):
-                        save_class_reg(c_pick, records_to_save)
-                        st.success(f"🎉 {c_pick} 個人賽報名名冊已成功儲存至伺服器！（共登記 {len(records_to_save)} 人次）")
+                        synced = save_class_reg(c_pick, records_to_save)
+                        if synced:
+                            st.success(f"🎉 {c_pick} 個人賽報名名冊已成功儲存並同步至雲端！（共登記 {len(records_to_save)} 人次）")
+                        else:
+                            st.warning(f"✅ {c_pick} 已存於本機（共 {len(records_to_save)} 人次），但雲端同步失敗，請檢查 GAS 權限。")
 
                 with c_print_class:
                     class_doc_name = f"{cfg['school_name']}_{cfg['session_title']}_{c_pick}_參賽道次排序名單.docx"
@@ -2190,8 +2385,8 @@ else:
 
             with tabs[1]:
                 st.subheader(f"🎽 {c_pick} 班際 {relay_item_name} 名單（【場次 {relay_eid}】棒次自選 + 彈性比例）")
-                min_b = quotas.get(f"relay_g{grade}_min_b", cfg.get("relay_min_boys", 1))
-                min_g = quotas.get(f"relay_g{grade}_min_g", cfg.get("relay_min_girls", 1))
+                min_b = int(quotas.get(f"relay_g{grade}_min_b", cfg.get("relay_min_boys", 1)))
+                min_g = int(quotas.get(f"relay_g{grade}_min_g", cfg.get("relay_min_girls", 1)))
                 st.info(f"📋 **大會規則**：4 位正選中，男生最少 **{min_b}** 人，女生最少 **{min_g}** 人。棒次完全自由自選。")
                 
                 saved_relay = load_class_relay(c_pick) or {}
@@ -2233,12 +2428,15 @@ else:
                         if b_cnt >= min_b and g_cnt >= min_g:
                             st.success(f"✅ 名單合規！陣容：{b_cnt} 男 {g_cnt} 女。")
                             if st.button("💾 儲存接力名單", key=f"save_relay_{c_pick}"):
-                                save_class_relay(c_pick, {
+                                synced = save_class_relay(c_pick, {
                                     "legs": [x.split(" ")[1].replace("(", "").replace(")", "").replace("男", "").replace("女", "") for x in chosen_legs],
                                     "sub_b": sub_b,
                                     "sub_g": sub_g
                                 })
-                                st.success(f"🎉 {c_pick} {relay_item_name} 隊伍名單已成功儲存至伺服器！")
+                                if synced:
+                                    st.success(f"🎉 {c_pick} {relay_item_name} 隊伍名單已成功儲存並同步至雲端！")
+                                else:
+                                    st.warning(f"✅ {c_pick} 接力名單已存於本機，但雲端同步失敗，請檢查 GAS 設定。")
                         else:
                             st.error(f"❌ 性別比例不符合規定！目前選擇：{b_cnt} 男、{g_cnt} 女。（規定：男生至少 {min_b} 人，女生至少 {min_g} 人）")
                 else:
@@ -2281,7 +2479,7 @@ else:
             edited_relay = st.data_editor(custom_df, hide_index=True, use_container_width=True)
             if st.button(f"🚀 確認定稿並儲存【場次 {sel_eid}】接力排線", type="primary"):
                 save_custom_schedule(sel_eid, edited_relay)
-                st.success(f"🎉 【場次 {sel_eid}】接力名單已正式定稿儲存！")
+                st.success(f"🎉 【場次 {sel_eid}】接力名單已正式定稿並同步雲端！")
 
         elif meta.get("type") == "field":
             st.info("💡 規則：全級選手依「班別＋學號」遞增嚴格排序為出場次序 1 至 N。")
@@ -2302,7 +2500,7 @@ else:
             )
             if st.button(f"🚀 確認定稿並儲存【場次 {sel_eid}】田賽出場次序", type="primary"):
                 save_custom_schedule(sel_eid, edited_field.sort_values(by="出場次序").reset_index(drop=True))
-                st.success(f"🎉 【場次 {sel_eid}】田賽次序已定稿儲存！")
+                st.success(f"🎉 【場次 {sel_eid}】田賽次序已定稿並同步雲端！")
 
         elif meta.get("type") == "track" and (meta.get("stage") == "heat" or not meta.get("heat_source_id")):
             st.info("💡 規則：A班-1線、B班-2線、C班-3線、D班-4線、E班-5線。同班學號小者入第 1 組，大者入第 2 組。主任可微調各組線道。")
@@ -2346,7 +2544,7 @@ else:
                 st.success("✅ 所有組別與線道設定良好，無重複衝突。")
                 if st.button(f"🚀 確認定稿並儲存【場次 {sel_eid}】排線", type="primary"):
                     save_custom_schedule(sel_eid, combined_edited_track.sort_values(by=["組別", "線道"]).reset_index(drop=True))
-                    st.success(f"🎉 【場次 {sel_eid}】徑賽分組排線已定稿儲存！")
+                    st.success(f"🎉 【場次 {sel_eid}】徑賽分組排線已定稿並同步雲端！")
         else:
             st.subheader(f"🏁 【場次 {sel_eid}】{sel_ename} 決賽道次")
             t_data_temp = get_tournament_results()
@@ -2884,41 +3082,49 @@ else:
         c_g1, c_g2 = st.columns(2)
         with c_g1:
             s_name = st.text_input("學校全銜", value=cfg["school_name"])
-            min_b = st.number_input("接力正選男生預設最低人數", min_value=0, max_value=3, value=cfg.get("relay_min_boys", 1))
+            min_b = st.number_input("接力正選男生預設最低人數", min_value=0, max_value=3, value=int(cfg.get("relay_min_boys", 1)))
         with c_g2:
             s_sess = st.text_input("運動會屆別／年度", value=cfg["session_title"])
-            min_g = st.number_input("接力正選女生預設最低人數", min_value=0, max_value=3, value=cfg.get("relay_min_girls", 1))
+            min_g = st.number_input("接力正選女生預設最低人數", min_value=0, max_value=3, value=int(cfg.get("relay_min_girls", 1)))
         
         st.write("---")
         st.subheader("🌐 【方案一】Google Workspace 雲端即時雙向同步設定")
-        st.info("💡 填入部署好的 Google Apps Script Web App 網址後，系統會在裁判輸入成績時自動寫入學校 Google Drive，永不因重開機遺失。")
+        st.info("💡 系統已內建學校專屬 GAS API 網址，配額、名冊、報名及成績都會自動雙向同步至 Google Drive。")
         
         gas_url_input = st.text_input(
             "Google Apps Script 網頁應用程式網址 (Web App URL)",
-            value=cfg.get("gas_api_url", ""),
+            value=cfg.get("gas_api_url", DEFAULT_GAS_API_URL),
             placeholder="https://script.google.com/macros/s/AKfycb.../exec"
         )
 
         c_gas_save, c_gas_test = st.columns([2, 3])
         with c_gas_save:
-            if st.button("💾 儲存並啟用 Google 雲端同步設定", type="primary"):
+            if st.button("💾 儲存並同步全部設定至雲端", type="primary"):
                 cfg["school_name"] = s_name
                 cfg["session_title"] = s_sess
                 cfg["relay_min_boys"] = int(min_b)
                 cfg["relay_min_girls"] = int(min_g)
-                cfg["gas_api_url"] = gas_url_input.strip()
+                cfg["gas_api_url"] = gas_url_input.strip() or DEFAULT_GAS_API_URL
                 save_config(cfg)
-                st.success("🎉 設定已更新並永久儲存！")
-                st.rerun()
+                if push_full_state_to_cloud():
+                    st.success("🎉 設定已更新並已將全校最新資料同步至 Google Drive！")
+                else:
+                    st.warning("⚠️ 本機設定已儲存，但雲端同步失敗，請點擊右側測試連線檢查權限。")
 
         with c_gas_test:
             if gas_url_input.strip():
-                if st.button("🔍 測試雲端 API 連線狀態"):
+                if st.button("🔍 測試雲端 API 連線與 JSON 格式"):
                     try:
                         with st.spinner("正在測試與學校 Google Drive 連線..."):
-                            t_res = requests.get(gas_url_input.strip(), timeout=5)
-                            if t_res.status_code == 200:
-                                st.success("🟢 連線成功！Google Apps Script API 運作完全正常。")
+                            t_res = requests.get(gas_url_input.strip(), timeout=10)
+                            body = t_res.text.strip()
+                            if t_res.status_code == 200 and (body.startswith("{") or body.startswith("[")):
+                                parsed = json.loads(body)
+                                q_cnt = len(parsed.get("quota_matrix", {})) if isinstance(parsed, dict) else 0
+                                s_cnt = len(parsed.get("students_records", [])) if isinstance(parsed, dict) else 0
+                                st.success(f"🟢 連線及格式完全正常！雲端現存配額紀錄：{q_cnt} 筆 ｜ 學生名冊：{s_cnt} 人。")
+                            elif t_res.status_code == 200:
+                                st.error("🔴 連線有回應但並非 JSON（通常是 GAS 存取權限未設為「所有人」，被導向 Google 登入頁）。")
                             else:
                                 st.error(f"🔴 伺服器回應異常碼: {t_res.status_code}")
                     except Exception as err:
@@ -2926,8 +3132,6 @@ else:
 
         st.write("---")
         st.subheader("📦 【方案二】手動全量數據包 (匯出備份 ＋ 上傳還原)")
-        st.info("💡 **離線抗災與跨設備同步專用**：可將目前全校所有名冊、自訂項目清單、配額矩陣、排線道次與比賽積分打包為一個檔案備份到本地；亦可在新設備上傳覆蓋還原。")
-
         col_sync_dl, col_sync_ul = st.columns(2)
 
         with col_sync_dl:
@@ -2958,7 +3162,17 @@ else:
                         if "custom_events" in loaded_data: save_events_config(loaded_data["custom_events"])
                         if "quota_matrix" in loaded_data: save_quota_matrix(loaded_data["quota_matrix"])
                         if "tournament_results" in loaded_data: save_tournament_results(loaded_data["tournament_results"])
-                        st.success("🎉 備份資料已成功載入並覆蓋此設備！")
+                        if isinstance(loaded_data.get("registrations"), list):
+                            by_cls = {}
+                            for rec in loaded_data["registrations"]:
+                                c_k = str(rec.get("班別", "")).strip()
+                                if c_k: by_cls.setdefault(c_k, []).append(rec)
+                            for c_k, recs in by_cls.items():
+                                with open(os.path.join(REG_DATA_DIR, f"reg_{c_k}.json"), "w", encoding="utf-8") as fp:
+                                    json.dump(recs, fp, ensure_ascii=False, indent=2)
+                            push_full_state_to_cloud()
+                        st.session_state["q_ver"] = st.session_state.get("q_ver", 0) + 1
+                        st.success("🎉 備份資料已成功載入並同步至雲端！")
                         st.rerun()
                     except Exception as err:
                         st.error(f"❌ 解析備份檔失敗: {err}")
